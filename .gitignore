@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.vscode/
+.streamlit/secrets.toml
+# local saves (on Streamlit Cloud saves go to the repo through the GitHub API instead)
+lineups/

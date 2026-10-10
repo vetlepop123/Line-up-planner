@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <label class="toggle">Pipe:
+        <select id="pipe" title="Drill pipe in the BOP">
+          <option value="none">No pipe</option>
+          <option value="drilling">On top drive</option>
+          <option value="hangoff">String hung off</option>
+        </select>
+      </label>
+      <span class="sep"></span>
+      <button data-mode="valves" title="Click valves and rams to open/close them">Operate valves</button>
+      <button data-mode="manual" title="Click pipes to add them to the selected path">Trace manually</button>
+      <button data-mode="auto" title="Click a start and an end point; the route through open valves is traced">Trace start → end</button>
+      <button data-mode="temp" title="Rig up temporary lines, valves, Lo-Torq valves, T-pieces, 4-ways, blind caps and labels">Temporary rig-up</button>
+      <span class="sep"></span>
+      <button data-act="close-valves">Close all valves</button>
+      <button data-act="open-rams">Open all rams</button>
+      <span class="grow"></span>
+      <button data-act="zoom-in" title="Zoom in">+</button>
+      <button data-act="zoom-out" title="Zoom out">−</button>
+      <button data-act="fit" title="Fit drawing to window">Fit</button>
+    </div>
+    <div id="main">
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <aside id="panel"></aside>
+    </div>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
