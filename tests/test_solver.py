@@ -170,3 +170,32 @@ def test_old_saves_with_pipe_in_hole_still_work():
     st["pipe_in_hole"] = True
     _, edges = build_graph(NETWORK, st)
     assert "TD_SUB~S_BSR" in {e["id"] for e in edges}
+
+
+def test_standard_lineups_follow_pipes_and_open_their_routes():
+    colors = {c["hex"] for c in NETWORK["path_colors"]}
+    assert len(colors) == 10
+    for lid, lu in NETWORK["lineups"].items():
+        assert all(NODES[v]["type"] == "valve" for v in lu.get("gauges", [])), lid
+        for d in lu["paths"]:
+            assert d["color"] in colors, lid
+            route_steps = [s for r in d["routes"] for s in steps(*r)]
+            valves = {n for r in d["routes"] for n in r if NODES[n]["type"] == "valve"}
+            st = lineup(*d.get("open", valves), pipe=lu.get("pipe", "none"))
+            info = path_info(NETWORK, st, {"steps": route_steps})
+            assert info["inactive"] == 0, lid
+            # the choke line-up leaves auto choke 40 as it is
+            assert info["closed_inside"] == (["40"] if lid == "choke" else []), lid
+
+
+def test_downlink_skid_is_a_dead_end():
+    st = lineup("59", "56", "LT", "STP_BO")
+    seen = reachable(st, "SP_X")
+    assert "LT" in seen and "DOWNLINK" not in seen and "BLEED_OFF" not in seen
+
+
+def test_pump_valves_feed_the_confirmed_standpipes():
+    for v, stp in [("P8", "STP1"), ("P13", "STP1"), ("P14", "STP1"),
+                   ("P9", "STP2"), ("P12", "STP2"), ("P15", "STP2")]:
+        seen = reachable(lineup(v), v)
+        assert stp in seen and ({"STP1", "STP2"} - {stp}).isdisjoint(seen), v

@@ -8,6 +8,10 @@ Interactive line-up tool for the standpipe manifold, pump room, choke & kill man
   (closed valves on the route opened, branches leaving it closed). Undo is available. Rams are never operated.
 - **Warnings** when paths conflict (shared pipe, flowing against each other, connected through open valves,
   open to an outlet) and when a path passes a closed valve.
+- **Standard line-ups** – toolbar buttons for *Drilling*, *Drilling + boost* and *Choke line-up*. Drilling is either
+  with or without boost (applying one replaces the other); the choke line-up can be added on its own. Defined in
+  `LINEUPS` in `lineup/network.py`.
+- Paths use ten fixed, easy-to-tell-apart colours.
 - **Pipe modes** – no pipe, string on top drive, or string hung off (open top just above the UPR).
 - **Temporary rig-up** – temporary lines (straight segments), valves, Lo-Torq valves, T-pieces, 4-way pieces,
   blind caps and free text labels, attached to the purple connection points.
@@ -42,8 +46,7 @@ streamlit run Planner.py
 ## Editing the rig drawing
 
 Everything about the rig is in [lineup/network.py](lineup/network.py): valve positions, pipes, outlets
-and connection points (`cp(...)`). Items marked `UNVERIFIED` are guesses from the drawing (pump room
-layout, adjustable chokes above valves 10 and 14, downlink tie-in).
+and connection points (`cp(...)`), plus the standard line-ups (`LINEUPS`).
 
 Path tracing runs in the browser (`lineup/component/frontend/main.js`). The graph rules
 (`buildGraph`, `passable`, `pathInfo`, temporary rig-up) are mirrored in `lineup/solver.py` for the

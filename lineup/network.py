@@ -17,7 +17,7 @@ Node types
   outlet    where flow leaves the system (overboard, tanks, flowline, well)
   vessel    pass-through vessel that also counts as an outlet (poorboy, stripping tank)
   cp        connection point (blind/blank end) where temporary hoses can be rigged
-  box       labelled pass-through box (STP#1, kelly hose, C / K blocks ...)
+  box       labelled pass-through box (STP#1, kelly hose, C / K blocks ...); block=True: dead end, passes no flow
   buffer    pass-through vessel drawn as a rectangle (buffer tanks, manifold headers)
   junction  plain pipe junction
   bore      node in the BOP bore / riser
@@ -30,8 +30,6 @@ Nodes/edges with a cond only exist in some modes:
   drill  pipe made up to the top drive        notd  top drive NOT connected to pipe
   pipe   any pipe in the BOP (drilling/hangoff) hang  string hung off
 Edges with over=True are drawn last with a gap, so they visibly cross over other lines.
-
-Items marked UNVERIFIED are best guesses from the drawing and should be checked.
 """
 
 from __future__ import annotations
@@ -139,8 +137,10 @@ cp("CP_61", 180, 215, "Blind above 61", lp="l")
 valve("61", 180, 265)
 junction("SP_A", 180, 325)
 valve("60", 140, 325, o="h")
-outlet("BLEED_OFF", 80, 395, "BLEED OFF (FLOWLINE)", lp="b")
-valve("57", 180, 385)
+valve("STP_BO", 80, 460, label="STP bleed off", lp="l", choke=True)
+junction("FL_J", 80, 576)
+outlet("BLEED_OFF", 80, 610, "BLEED OFF (FLOWLINE)", lp="b")
+valve("57", 180, 400)
 junction("SP_L", 180, 445)
 valve("50", 180, 500)
 box("STP1", 180, 560, "STP#1 GREEN", w=54, h=30, fill="#7ac943")
@@ -148,13 +148,20 @@ junction("J52", 235, 445)
 valve("52", 235, 490)
 valve("51", 235, 530)
 box("BOOSTER", 235, 592, "BOOSTER", w=50, h=20)
-valve("55", 265, 445, o="h")
+valve("55", 265, 445, o="h", lp="b")
 junction("SP_TM", 298, 325)
-valve("59", 298, 355)
-valve("56", 298, 405)
+valve("59", 298, 345)
+# cross between 59 and 56: both branches leave on the left (downlink skid, then the rig-up point)
+junction("SP_X", 298, 368)
+junction("SP_X2", 298, 390)
+valve("56", 298, 415)
 junction("SP_M", 298, 445)
 valve("53", 298, 500)
 box("CHOKE_MANIF", 298, 560, "CHOKE MANIF.", w=48, h=30)
+cp("CP_SPX", 255, 410, "Temp. rig-up", lp="b")
+valve("LT", 115, 470, label="LT")
+# dead end while not downlinking: holds standpipe pressure for the gauges, passes no flow
+box("DOWNLINK", 115, 576, "DOWNLINK SKID", w=56, h=42, block=True)
 junction("SP_RT", 350, 325)
 valve("58", 350, 385)
 junction("SP_R", 350, 445)
@@ -165,13 +172,13 @@ valve("63", 350, 237)
 junction("YP", 350, 205)
 cp("CP_YP", 312, 205, "Y-piece 2\" 1502 (cementing)")
 box("SERVICE_LOOP", 350, 150, "SERVICE LOOP / KELLY HOSE", w=110, h=30)
-valve("LT", 128, 505, label="LT")
-outlet("DOWNLINK", 128, 580, "DOWNLINK (Baker)", lp="b")  # UNVERIFIED tie-in point
 
 edge("CP_61", "61", r=SP)
 edge("61", "SP_A", r=SP)
 edge("SP_A", "60", r=SP)
-edge("60", "BLEED_OFF", (80, 325), r=SP)
+edge("60", "STP_BO", (80, 325), r=SP)
+edge("STP_BO", "FL_J", r=SP)
+edge("FL_J", "BLEED_OFF", r=SP)
 edge("SP_A", "57", r=SP)
 edge("57", "SP_L", r=SP)
 edge("SP_L", "50", r=SP)
@@ -185,7 +192,13 @@ edge("51", "BOOSTER", r=SP)
 edge("SP_A", "SP_TM", r=SP)
 edge("SP_TM", "SP_RT", r=SP)
 edge("SP_TM", "59", r=SP)
-edge("59", "56", r=SP)
+edge("59", "SP_X", r=SP)
+edge("SP_X", "SP_X2", r=SP)
+edge("SP_X2", "56", r=SP)
+edge("SP_X2", "CP_SPX", (255, 390), r=SP)
+edge("SP_X", "LT", (115, 368), r=SP, over=True)
+edge("LT", "DOWNLINK", r=SP)
+edge("DOWNLINK", "FL_J", r=SP)  # downlink skid drains to the flowline with the bleed-off
 edge("56", "SP_M", r=SP)
 edge("SP_M", "SP_R", r=SP)
 edge("SP_M", "53", r=SP)
@@ -199,13 +212,12 @@ edge("62", "63", r=SP)
 edge("63", "YP", r=SP)
 edge("YP", "SERVICE_LOOP", r=SP)
 edge("YP", "CP_YP", r=SP)
-edge("SP_L", "LT", (128, 445), r=SP)
-edge("LT", "DOWNLINK", r=SP)
 text(375, 300, "STANDPIPE MANIFOLD", 13, weight="bold")
 
-# ---------------------------------------------------------------- pump room (UNVERIFIED layout)
+# ---------------------------------------------------------------- pump room
 # Each pump: discharge valve, then one valve up to the STP#1 header (H1) and one
 # to the STP#2 header (H2). HEX #3 also feeds the shear line through P10.
+# Confirmed: P8, P13, P14 go to standpipe 1; P9, P12, P15 to standpipe 2. No other valves.
 junction("H1_A", 125, 665)
 junction("H1_B", 180, 665)
 junction("H1_C", 275, 665)
@@ -224,7 +236,7 @@ edge("STP2", "H2_S", r=SP, over=True)
 # side: which side of the pump the branch is drawn on (-1 left, +1 right).
 for pid, label, x, dv, lv, rv, dest, side in [
     ("HEX3", "HEX #3", 150, "P7", "P8", "P9", "ACTIVE\nMIX", -1),
-    ("HEX2", "HEX #2", 300, "P11", "P12", "P13", "ACTIVE\nSUCTION", 1),
+    ("HEX2", "HEX #2", 300, "P11", "P13", "P12", "ACTIVE\nSUCTION", 1),
     ("HEX1", "HEX #1", 490, "P16", "P14", "P15", "ACTIVE\nSUCTION", 1),
 ]:
     n = label[-1]
@@ -257,8 +269,8 @@ for pid, label, x, dv, lv, rv, dest, side in [
 
 edge("P8", "H1_A", r=SP)
 edge("P9", "H2_A", r=SP)
-edge("P12", "H1_C", r=SP, over=True)
-edge("P13", "H2_B", r=SP)
+edge("P13", "H1_C", r=SP, over=True)
+edge("P12", "H2_B", r=SP)
 edge("P14", "H1_E", r=SP, over=True)
 edge("P15", "H2_C", r=SP)
 
@@ -300,21 +312,19 @@ edge("9", "RH")
 
 # choke side (left column)
 valve("11", 730, 345)
-junction("J11", 730, 305)
 valve("15", 730, 275, auto=True)
 valve("40", 730, 240, auto=True, label="40 (AC#1)", choke=True)
 valve("18", 765, 222, o="h")
 edge("LH", "11", (730, 401))
-edge("11", "J11")
-edge("J11", "15")
+edge("11", "15")
 edge("15", "40")
 edge("40", "18", (730, 222), r="10k")
 edge("18", "BUF_L", (805, 222), (805, 202), r="10k")
+# 10 ends in a temporary tie-in point (not connected to the 11 - 15 line)
 valve("10", 690, 360, lp="l")
-valve("MC1", 690, 322, label="Adj. choke 1", lp="l")  # UNVERIFIED: manual adjustable choke
+cp("CP_10", 690, 318, "Temp. tie-in", lp="l")
 edge("LH", "10", (690, 401))
-edge("10", "MC1")
-edge("MC1", "J11", (690, 305))
+edge("10", "CP_10")
 
 # middle column
 valve("12", 865, 345)
@@ -333,21 +343,19 @@ edge("42", "PORT_OB", r="10k", tags=[{"x": 830, "y": 305, "s": "N8"}])
 
 # kill side (right column)
 valve("13", 1050, 345)
-junction("J13", 1050, 305)
 valve("17", 1050, 275, auto=True)
 valve("41", 1050, 240, auto=True, label="41 (AC#2)", lp="l", choke=True)
 valve("20", 1085, 224, o="h", lp="b")
 edge("RH", "13", (1050, 401))
-edge("13", "J13")
-edge("J13", "17")
+edge("13", "17")
 edge("17", "41")
 edge("41", "20", (1050, 224), r="10k")
 edge("20", "BUF_R", (1110, 224), (1110, 202), r="10k")
+# 14 ends in a temporary tie-in point (not connected to the 13 - 17 line)
 valve("14", 1098, 360)
-valve("MC2", 1098, 322, label="Adj. choke 2")  # UNVERIFIED: manual adjustable choke
+cp("CP_14", 1098, 318, "Temp. tie-in", lp="r")
 edge("RH", "14", (1098, 401))
-edge("14", "MC2")
-edge("MC2", "J13", (1098, 305))
+edge("14", "CP_14")
 valve("43", 1155, 268, auto=True)
 outlet("STB_OB", 1155, 330, "STB O/B", lp="b")
 edge("BUF_R", "43", (1155, 202), r="10k")
@@ -532,9 +540,91 @@ edge("MP_ISO_C", "CL_TOP", (805, 1185), (1720, 1185), (1720, 420), style="dot")
 edge("SERVICE_LOOP", "TDS", (350, 55), (1440, 55), (1440, 160), r=SP,
      tags=[{"x": 700, "y": 50, "s": "KELLY HOSE"}])
 
-# boost line: 51 -> booster -> riser, routed under the drawing
-edge("BOOSTER", "BOOST_IN", (235, 1220), (1760, 1220), (1760, 395), (1550, 395), (1550, 500),
+# boost line: 51 -> booster -> mud boost valve -> riser, routed under the drawing
+valve("MBV", 1550, 500, o="h", label="Mud boost valve", lp="b")
+edge("BOOSTER", "MBV", (235, 1220), (1760, 1220), (1760, 395), (1590, 395), (1590, 500),
      r=SP, over=True, style="dot", tags=[{"x": 1000, "y": 1214, "s": "BOOST LINE (from 51)"}])
+edge("MBV", "BOOST_IN", r=SP)
+
+# ---------------------------------------------------------------- path colours
+# The ten colours a flow path can have (no free colour picker).
+PATH_COLORS = [
+    {"name": "Green", "hex": "#00a651"},
+    {"name": "Blue", "hex": "#1e6fff"},
+    {"name": "Orange", "hex": "#ff8c00"},
+    {"name": "Purple", "hex": "#9c27b0"},
+    {"name": "Red", "hex": "#e02424"},
+    {"name": "Cyan", "hex": "#00bcd4"},
+    {"name": "Pink", "hex": "#ff5fc0"},
+    {"name": "Brown", "hex": "#8d5524"},
+    {"name": "Yellow", "hex": "#f2c200"},
+    {"name": "Grey", "hex": "#7f8c8d"},
+]
+_COLOR = {c["name"]: c["hex"] for c in PATH_COLORS}
+
+# ---------------------------------------------------------------- standard line-ups
+# Applied from the toolbar. Each path is a list of routes; a route is a chain of node ids in
+# flow order. Feeder routes come first and the main route (ending where the flow leaves) last,
+# so the path reads pump -> outlet. "open" lists the valves the line-up opens (default: every valve on the routes);
+# branches leaving the paths are closed at their first valve. "gauges": valves opened only so the
+# gauges read pressure; they are not part of a path (no arrows) and are left open by the isolation.
+# Applying a line-up replaces the earlier standard paths of the same group, so drilling is either
+# with or without boost; gauge valves of the other line-ups in the group are closed again.
+_STRING_AND_ANNULUS = [
+    "YP", "SERVICE_LOOP", "TDS", "IBOP_A", "IBOP_M", "TD_SUB",
+    "S_BSR", "S_CSR", "S_HANG", "S_BIT", "WELL",
+    "WELLHEAD", "K_LOW", "LPR", "C_LOW", "MPR", "UPR", "B_HANG", "K_MID", "CSR", "C_UP",
+    "BSR", "B_LA", "LA", "K_UP", "UA", "BOOST_IN", "RISER_TOP", "BELL",
+]
+_KELLY = ["SP_RT", "62", "63"]
+
+LINEUPS = {
+    "drill": {
+        "label": "Drilling", "group": "drill", "pipe": "drilling",
+        "title": "Normal drilling: all mud pumps up both standpipes, top drive, string, annulus, flowline",
+        "gauges": ["59", "56", "LT"],
+        "paths": [{
+            "name": "Drilling", "color": _COLOR["Green"],
+            "routes": [
+                ["HEX2", "PD_HEX2", "P11", "J_HEX2", "J_HEX2_L", "P13", "H1_C", "H1_B"],
+                ["J_HEX2", "J_HEX2_R", "P12", "H2_B"],
+                ["HEX1", "PD_HEX1", "P16", "J_HEX1", "J_HEX1_L", "P14", "H1_E", "H1_C"],
+                ["J_HEX1", "J_HEX1_R", "P15", "H2_C", "H2_S"],
+                ["J_HEX3", "J_HEX3_R", "P9", "H2_A", "H2_B", "H2_S", "STP2", "54", "SP_R", "58", "SP_RT"],
+                ["HEX3", "PD_HEX3", "P7", "J_HEX3", "J_HEX3_L", "P8", "H1_A", "H1_B", "STP1", "50", "SP_L",
+                 "57", "SP_A", "SP_TM", *_KELLY, *_STRING_AND_ANNULUS],
+            ],
+        }],
+    },
+    "drill_boost": {
+        "label": "Drilling + boost", "group": "drill", "pipe": "drilling",
+        "title": "Drilling with boost: HEX #1 and #2 up standpipe 2 to the string, HEX #3 up standpipe 1 and down the boost line",
+        "gauges": ["59", "56"],
+        "paths": [{
+            "name": "Drilling", "color": _COLOR["Green"],
+            "routes": [
+                ["HEX1", "PD_HEX1", "P16", "J_HEX1", "J_HEX1_R", "P15", "H2_C", "H2_S"],
+                ["HEX2", "PD_HEX2", "P11", "J_HEX2", "J_HEX2_R", "P12", "H2_B", "H2_S", "STP2", "54", "SP_R",
+                 "58", *_KELLY, *_STRING_AND_ANNULUS],
+            ],
+        }, {
+            "name": "Boost", "color": _COLOR["Yellow"],
+            "routes": [
+                ["HEX3", "PD_HEX3", "P7", "J_HEX3", "J_HEX3_L", "P8", "H1_A", "H1_B", "STP1", "50", "SP_L",
+                 "J52", "52", "51", "BOOSTER", "MBV", "BOOST_IN"],
+            ],
+        }],
+    },
+    "choke": {
+        "label": "Choke line-up", "group": "choke",
+        "title": "Choke lined up for drilling: choke isolation, 7, 11, 15, 18 and 45 open",
+        "paths": [{
+            "name": "Choke line-up", "color": _COLOR["Purple"],
+            "routes": [["CL_TOP", "MP_ISO_C", "C", "7", "LH", "11", "15", "40", "18", "BUF_L", "45", "POORBOY"]],
+            "open": ["MP_ISO_C", "7", "11", "15", "18", "45"],
+        }],
+    },
+}
 
 # ---------------------------------------------------------------- legend
 LEGEND = [{"r": "15k", "label": "Pipe"}]
@@ -557,6 +647,8 @@ NETWORK = {
     "legend": LEGEND,
     "colors": RATING_COLORS,
     "pipe": PIPE,
+    "path_colors": PATH_COLORS,
+    "lineups": LINEUPS,
 }
 
 

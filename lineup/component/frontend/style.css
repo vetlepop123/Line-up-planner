@@ -46,7 +46,11 @@ button.small:hover { background: #eef3ff; }
 .path { border: 1px solid #ddd; border-left: 6px solid #999; border-radius: 4px; padding: 5px 6px; margin: 6px 0; background: #fff; cursor: pointer; }
 .path.sel { border-color: #1e3a8a; box-shadow: 0 0 0 1px #1e3a8a; }
 .path .row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; font-size: 12px; }
-.path input[type=color] { width: 30px; height: 24px; padding: 0; border: 1px solid #bbb; border-radius: 3px; cursor: pointer; }
+.path .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.swatches { display: flex; gap: 3px; margin: 2px 0 5px; }
+.swatches .sw { width: 19px; height: 19px; padding: 0; border: 2px solid #fff; border-radius: 3px; box-shadow: 0 0 0 1px #bbb; cursor: pointer; }
+.swatches .sw.on { box-shadow: 0 0 0 2px #222; }
+#lineups { display: contents; }
 .path .pname { flex: 1; min-width: 0; font: inherit; font-weight: bold; padding: 2px 4px; border: 1px solid #ccc; border-radius: 3px; }
 .path label { display: flex; align-items: center; gap: 2px; margin-right: auto; }
 .pinfo { font-size: 12px; margin: 2px 0 3px; }

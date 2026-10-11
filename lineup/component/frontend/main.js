@@ -15,7 +15,7 @@ const OPEN = "#22b14c";
 const CLOSED = "#e02424";
 const HOSE = "#8e24aa";
 const WARN = "#ff8c00";
-const PALETTE = ["#00b050", "#e02424", "#1e6fff", "#ff8c00", "#00b8d4", "#d81b60", "#8d6e63"];
+let PALETTE = [];     // the ten path colours, from NET.path_colors
 
 let NET = null;       // network from Python
 let ST = null;        // current line-up state
@@ -36,7 +36,9 @@ window.addEventListener("message", (ev) => {
   if (!d || d.type !== "streamlit:render") return;
   const a = d.args;
   NET = a.network;
+  PALETTE = NET.path_colors.map((c) => c.hex);
   computeDegree();
+  drawLineupButtons();
   if (a.height !== frameH) {
     frameH = a.height;
     document.getElementById("app").style.height = frameH + "px";
@@ -70,7 +72,7 @@ function normalize(state, def) {
   s.paths = (state.paths || []).map((p, i) => ({
     id: p.id || "F" + (i + 1), name: p.name || "Path " + (i + 1), color: p.color || PALETTE[i % PALETTE.length],
     arrows: p.arrows !== false, steps: (p.steps || []).filter((x) => x && x.e && x.from),
-    start: p.start || null, reversed: !!p.reversed,
+    start: p.start || null, reversed: !!p.reversed, std: p.std || null,
   }));
   return s;
 }
@@ -194,7 +196,7 @@ function passable(n, st) {
       if (n.kind === "pipe") return !(v === "closed" && pipeMode(st) !== "none");
       if (n.kind === "shear_ns") return true;
       return v !== "closed";
-    default: return true;
+    default: return !n.block;   // block: a dead end such as the downlink skid
   }
 }
 
@@ -333,9 +335,18 @@ function orient(p) {
   let steps = [], firstRoot = null;
   for (const s of act) {
     if (done.has(s.e)) continue;
+    const whole = bfs(G.emap[s.e].a);
+    const nodes = new Set(whole.flatMap((x) => [G.emap[x.e].a, G.emap[x.e].b]));
+    if ([...nodes].some((n) => deg(n) > 2)) {
+      // a branched piece (several pumps joining, a split) has no single start: keep its directions
+      const piece = whole.map((x) => ({ e: x.e, from: current.get(x.e) }));
+      piece.forEach((x) => done.add(x.e));
+      steps = steps.concat(piece);
+      if (firstRoot === null) firstRoot = piece[0].from;
+      continue;
+    }
     // the root of each connected piece is one of its ends: the path start if it is an end of
     // this piece, otherwise the end that keeps most of the current directions
-    const nodes = new Set(bfs(G.emap[s.e].a).flatMap((x) => [G.emap[x.e].a, G.emap[x.e].b]));
     const ends = [...nodes].filter((n) => deg(n) === 1);
     let root;
     if (p.start && nodes.has(p.start) && deg(p.start) === 1) {
@@ -383,7 +394,9 @@ function toggleStep(eid) {
     p.start = other(e, p.start);
   }
   if (!p.steps.length) { p.start = null; p.reversed = false; }
-  p.steps.push({ e: eid, from: e.a });
+  // a pipe added to the side of the path flows away from it
+  const deg = pathDegree(p);
+  p.steps.push({ e: eid, from: deg.has(e.b) && !deg.has(e.a) ? e.b : e.a });
   orient(p);
   changed();
 }
@@ -399,12 +412,12 @@ const CLOSED_VALVE_COST = 300;   // prefer routes through valves that are alread
 const OTHER_PATH_COST = 400;     // per pipe: stay clear of other paths when there is a sensible alternative
 const BORE_COST = 150;           // per node: don't detour through the BOP bore / riser
 
-// pipes and nodes used by other paths than `skip`: id -> [path names]
+// pipes and nodes used by other paths than `skip` (a path or a Set of paths): id -> [path names]
 function usedByPaths(skip) {
   const nodes = new Map(), edges = new Map();
   const add = (m, k, name) => { if (!m.has(k)) m.set(k, []); if (!m.get(k).includes(name)) m.get(k).push(name); };
   for (const p of ST.paths) {
-    if (p === skip) continue;
+    if (skip instanceof Set ? skip.has(p) : p === skip) continue;
     for (const s of p.steps) {
       const e = G.emap[s.e];
       if (!e) continue;
@@ -437,7 +450,7 @@ function lineupRoute(starts, ends, used) {
       let d = dist[cur] + edgeLength(e);
       if (!ends.has(nxt)) {
         if (node.type === "pump" || node.type === "outlet") continue;
-        if (node.type === "ram" && !passable(node, ST)) continue;
+        if (node.type !== "valve" && !passable(node, ST)) continue;   // closed ram, dead end
         if (node.type === "valve" && !passable(node, ST)) d += CLOSED_VALVE_COST;
         if (node.type === "bore" || node.type === "string" || node.type === "ram") d += BORE_COST;
       }
@@ -495,12 +508,17 @@ function traceLineup(a, b, path) {
     for (const name of used.nodes.get(n) || []) sharedWith.add(name);
   }
   for (const name of sharedWith) out.warnings.push(`The route shares pipework with path "${name}".`);
+  isolate(route, routeEdges, onRoute, new Set([first, last]), used, out);
+  return out;
+}
 
-  // isolate: walk every branch leaving the route until the first valve
-  const seen = new Set(onRoute);
+// Walk every branch leaving the route until the first valve and close it, unless another path
+// runs through it. `stop`: nodes that count as the route; `ends`: valves not to look past.
+function isolate(route, routeEdges, stop, ends, used, out) {
+  const seen = new Set(stop);
   for (const n of route) {
     const node = G.nodes[n];
-    if ((n === first || n === last) && (node.type === "valve" || node.type === "ram")) continue;  // don't look past an end valve
+    if (ends.has(n) && (node.type === "valve" || node.type === "ram")) continue;  // don't look past an end valve
     for (const e of G.adj[n]) {
       if (routeEdges.has(e.id)) continue;
       const todo = [other(e, n)];
@@ -521,14 +539,13 @@ function traceLineup(a, b, path) {
           }
           continue;
         }
-        if (mn.type === "ram" && !passable(mn, ST)) continue;
+        if (!passable(mn, ST)) continue;   // closed ram, dead end
         if (mn.type === "pump") continue;
         if (isOpenEnd(mn)) { out.leaks.push(m); continue; }
         for (const e2 of G.adj[m]) if (!routeEdges.has(e2.id)) todo.push(other(e2, m));
       }
     }
   }
-  return out;
 }
 
 function pickTerm(t) {
@@ -539,7 +556,7 @@ function pickTerm(t) {
   const [a, b] = ui.terms;
   ui.terms = [];
   const p = activePath(true);
-  const before = JSON.stringify({ valves: ST.valves, paths: ST.paths });
+  const before = JSON.stringify({ valves: ST.valves, paths: ST.paths, pipe: ST.pipe });
   const r = traceLineup(a, b, p);
   if (r.error) {
     ui.msg = { kind: "error", lines: [r.error] };
@@ -565,9 +582,87 @@ function undoTrace() {
   const u = JSON.parse(ui.undo);
   ST.valves = u.valves;
   ST.paths = u.paths;
+  if (u.pipe) ST.pipe = u.pipe;
   if (!ST.paths.some((p) => p.id === ui.active)) ui.active = ST.paths.length ? ST.paths[0].id : null;
   ui.undo = null;
-  ui.msg = { kind: "ok", lines: ["Last trace undone - valves and paths are back as they were."] };
+  ui.msg = { kind: "ok", lines: ["Undone - valves, paths and pipe mode are back as they were."] };
+  changed();
+}
+
+// ---------------------------------------------------------------- standard line-ups (NET.lineups)
+function drawLineupButtons() {
+  const box = document.getElementById("lineups");
+  if (box.childElementCount) return;
+  for (const [id, L] of Object.entries(NET.lineups || {})) {
+    const b = document.createElement("button");
+    b.dataset.lineup = id;
+    b.title = L.title || "";
+    b.textContent = L.label;
+    box.appendChild(b);
+  }
+}
+
+// Replace the standard paths of the line-up's group with its paths, open its valves and close
+// the first valve on every branch leaving them. Rams are never operated.
+function applyLineup(id) {
+  const L = NET.lineups[id];
+  const before = JSON.stringify({ valves: ST.valves, paths: ST.paths, pipe: ST.pipe });
+  const pipeChanged = L.pipe && L.pipe !== pipeMode(ST);
+  if (L.pipe) ST.pipe = L.pipe;
+  ST.paths = ST.paths.filter((p) => p.std !== L.group);
+  G = buildGraph(NET, ST);
+
+  const made = [];
+  for (const d of L.paths) {
+    const steps = [];
+    for (const r of d.routes) {
+      for (let i = 1; i < r.length; i++) {
+        const e = G.adj[r[i - 1]] && G.adj[r[i - 1]].find((x) => other(x, r[i - 1]) === r[i]);
+        if (!e) {
+          Object.assign(ST, JSON.parse(before));
+          ui.msg = { kind: "error", lines: [`${L.label}: no pipe between ${nodeName(r[i - 1])} and ${nodeName(r[i])}.`] };
+          return render();
+        }
+        steps.push({ e: e.id, from: r[i - 1] });
+      }
+    }
+    const p = newPath();
+    Object.assign(p, { name: d.name, color: d.color, std: L.group, steps, start: d.routes[0][0], reversed: false });
+    made.push({ p, d });
+  }
+
+  const out = { opened: [], closed: [], kept: [], leaks: [], warnings: [] };
+  const open = (v) => { if (ST.valves[v] !== "open") { ST.valves[v] = "open"; out.opened.push(v); } };
+  const stop = new Set(), routeEdges = new Set(), ends = new Set();
+  for (const { p, d } of made) {
+    for (const s of p.steps) { const e = G.emap[s.e]; stop.add(e.a); stop.add(e.b); routeEdges.add(e.id); }
+    for (const r of d.routes) { ends.add(r[0]); ends.add(r[r.length - 1]); }
+    (d.open || [...new Set(d.routes.flat())].filter((n) => G.nodes[n].type === "valve")).forEach(open);
+  }
+  const route = [...stop];
+  // gauge valves: opened, but not part of a path, and the isolation stops at them
+  const gauges = new Set(L.gauges || []);
+  gauges.forEach(open);
+  gauges.forEach((v) => stop.add(v));
+  for (const lu of Object.values(NET.lineups)) {
+    if (lu.group !== L.group) continue;
+    for (const v of lu.gauges || []) {
+      if (!stop.has(v) && ST.valves[v] === "open") { ST.valves[v] = "closed"; out.closed.push(v); }
+    }
+  }
+  isolate(route, routeEdges, stop, ends, usedByPaths(new Set(made.map((m) => m.p))), out);
+  if (gauges.size) out.gaugeNames = [...gauges];
+
+  ui.undo = before;
+  ui.active = made[0].p.id;
+  const names = (ids) => ids.map(nodeName).join(", ");
+  const lines = [`Line-up "${L.label}" applied.`];
+  if (pipeChanged) lines.push(`Pipe set to: ${document.querySelector(`#pipe option[value="${L.pipe}"]`).textContent.toLowerCase()}.`);
+  lines.push(out.opened.length ? `Opened: ${names(out.opened)}` : "No valves had to be opened.");
+  if (out.gaugeNames) lines.push(`Open for gauge reading: ${names(out.gaugeNames)}`);
+  if (out.closed.length) lines.push(`Closed to isolate: ${names(out.closed)}`);
+  if (out.leaks.length) lines.push(`Cannot be isolated with a valve - also open to: ${names(out.leaks)}`);
+  ui.msg = { kind: out.warnings.length || out.leaks.length ? "warn" : "ok", lines, warnings: out.warnings };
   changed();
 }
 
@@ -590,9 +685,11 @@ function pathWarnings() {
     nodesOf.set(p.id, ns);
     out.set(p.id, { against: new Set(), shares: new Set(), connected: new Set(), leaks: new Set() });
   }
+  // paths of the same standard line-up (drilling + boost) are meant to meet, so they don't warn about each other
+  const sameLineup = (p, q) => !!p.std && p.std === q.std;
   for (const list of dirs.values()) {
     for (const x of list) for (const y of list) {
-      if (x.p === y.p) continue;
+      if (x.p === y.p || sameLineup(x.p, y.p)) continue;
       out.get(x.p.id)[x.from === y.from ? "shares" : "against"].add(y.p.name);
     }
   }
@@ -610,6 +707,7 @@ function pathWarnings() {
         if (seen.has(m)) continue;
         seen.add(m);
         const mn = G.nodes[m];
+        if (ST.paths.some((q) => q !== p && sameLineup(p, q) && nodesOf.get(q.id).has(m))) continue;
         const hit = ST.paths.find((q) => q !== p && nodesOf.get(q.id).has(m));
         if (hit) { w.connected.add(hit.name); continue; }
         if (!passable(mn, ST) || mn.type === "pump") continue;
@@ -1248,7 +1346,7 @@ function renderPanel(infos) {
     const cls = { error: "closedsys", warn: "warnmsg", ok: "okmsg" }[ui.msg.kind];
     h += `<div class="sec ${cls}">${ui.msg.lines.map((l) => `<div>${esc(l)}</div>`).join("")}` +
       (ui.msg.warnings || []).map((w) => `<div class="note">${esc(w)}</div>`).join("") +
-      (ui.undo ? `<div class="row"><button class="small" data-act="undo">↶ Undo this trace</button></div>` : "") + `</div>`;
+      (ui.undo ? `<div class="row"><button class="small" data-act="undo">↶ Undo</button></div>` : "") + `</div>`;
   }
 
   h += `<div class="sec"><h4>Flow paths <button class="small" data-act="new-path">+ New path</button></h4>`;
@@ -1257,9 +1355,14 @@ function renderPanel(infos) {
     const i = infos.get(p.id);
     h += `<div class="path ${p.id === ui.active ? "sel" : ""}" data-sel="${p.id}" style="border-left-color:${p.color}">
       <div class="row">
-        <input type="color" value="${p.color}" data-color="${p.id}" title="Path colour">
+        <span class="dot" style="background:${p.color}"></span>
         <input type="text" class="pname" value="${esc(p.name)}" data-name="${p.id}">
-      </div>
+      </div>`;
+    if (p.id === ui.active) {
+      h += `<div class="swatches">${NET.path_colors.map((c) => `<button class="sw ${c.hex === p.color ? "on" : ""}"
+        style="background:${c.hex}" data-pcolor="${p.id}" data-hex="${c.hex}" title="${c.name}"></button>`).join("")}</div>`;
+    }
+    h += `
       <div class="row">
         <label title="Show flow direction arrows"><input type="checkbox" data-arrows="${p.id}" ${p.arrows ? "checked" : ""}> Arrows</label>
         <button class="small" data-rev="${p.id}" title="Reverse flow direction">⇄ Reverse</button>
@@ -1304,9 +1407,10 @@ function bowtie(fill, ring, choke) {
 const findPath = (id) => ST.paths.find((p) => p.id === id);
 
 panel.addEventListener("click", (ev) => {
-  const t = ev.target.closest("[data-act],[data-rev],[data-clear],[data-delp],[data-sel],[data-tool],[data-tsel]");
+  const t = ev.target.closest("[data-act],[data-rev],[data-clear],[data-delp],[data-sel],[data-tool],[data-tsel],[data-pcolor]");
   if (!t) return;
   const d = t.dataset;
+  if (d.pcolor) { findPath(d.pcolor).color = d.hex; return changed(); }
   if (d.tool) { ui.tool = d.tool; ui.draft = null; return render(); }
   if (d.tsel) { ui.sel = d.tsel; return render(); }
   if (d.act === "t-delete") return deleteTemp(ui.sel);
@@ -1333,7 +1437,6 @@ panel.addEventListener("click", (ev) => {
 
 panel.addEventListener("change", (ev) => {
   const d = ev.target.dataset;
-  if (d.color) { findPath(d.color).color = ev.target.value; return changed(); }
   if (d.name) { findPath(d.name).name = ev.target.value.trim() || findPath(d.name).name; return changed(); }
   if (d.arrows) { findPath(d.arrows).arrows = ev.target.checked; return changed(); }
   if (d.tlabel !== undefined) { tempThing(ui.sel).label = ev.target.value; return changed(); }
@@ -1374,6 +1477,7 @@ document.getElementById("toolbar").addEventListener("click", (ev) => {
   const b = ev.target.closest("button");
   if (!b) return;
   if (b.dataset.mode) return setMode(b.dataset.mode);
+  if (b.dataset.lineup) return applyLineup(b.dataset.lineup);
   switch (b.dataset.act) {
     case "close-valves":
       for (const id in ST.valves) if (NET.nodes[id]?.type !== "ram") ST.valves[id] = "closed";

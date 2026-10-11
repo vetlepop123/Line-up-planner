@@ -137,7 +137,7 @@ def passable(node: dict, state: dict) -> bool:
         if kind == "shear_ns":
             return True
         return not closed
-    return True
+    return not node.get("block")  # block: a dead end such as the downlink skid
 
 
 def path_info(net: dict, state: dict, path: dict) -> dict:
