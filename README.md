@@ -13,7 +13,7 @@ Interactive line-up tool for the standpipe manifold, pump room, choke & kill man
   `LINEUPS` in `lineup/network.py`.
 - Paths use ten fixed, easy-to-tell-apart colours.
 - **Pipe modes** – no pipe, string on top drive, or string hung off (open top just above the UPR).
-- **Temporary rig-up** – temporary lines (straight segments), valves, Lo-Torq valves, T-pieces, 4-way pieces,
+- **Temporary rig-up** – temporary lines (straight segments), valves, T-pieces, 4-way pieces,
   blind caps and free text labels, attached to the purple connection points.
 - Line-ups can be **saved / loaded**, downloaded as a file, and printed to **PDF**.
 

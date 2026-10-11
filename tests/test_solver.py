@@ -2,7 +2,7 @@ from collections import deque
 
 from lineup.network import NETWORK, default_state
 from lineup.pdf import build_pdf
-from lineup.solver import build_graph, notes, passable, path_info
+from lineup.solver import build_graph, notes, passable, path_info, temp_of
 
 NODES = NETWORK["nodes"]
 
@@ -82,7 +82,8 @@ def test_old_hoses_convert_and_disconnect_with_pipe_in_hole():
     assert any("disconnected" in n for n in notes(NETWORK, st))
 
 
-# C6 end -> Lo-Torq -> T-piece -> line to Y-piece; T-piece's third leg is blind capped
+# C6 end -> valve -> T-piece -> line to Y-piece; T-piece's third leg is blind capped.
+# X1 uses the old "lotorq" kind, which now loads as an ordinary valve.
 RIG = {
     "items": [
         {"id": "X1", "kind": "lotorq", "x": 560, "y": 522, "o": "h", "label": "LT-1"},
@@ -106,7 +107,8 @@ def test_temporary_rig_up_parts_in_the_graph():
     assert "X4" not in nodes   # text is only a label
     assert {"L1", "L2", "L3", "L4"} <= {e["id"] for e in edges}
     seen = reachable(st, "C6")
-    assert "X1" not in seen   # Lo-Torq closed
+    assert "X1" not in seen   # valve closed
+    assert temp_of(NETWORK, st)["items"][0]["kind"] == "valve"
     st["valves"]["X1"] = "open"
     assert {"X2", "X3", "CP_YP", "SERVICE_LOOP"} <= reachable(st, "C6")
 
@@ -199,3 +201,18 @@ def test_pump_valves_feed_the_confirmed_standpipes():
                    ("P9", "STP2"), ("P12", "STP2"), ("P15", "STP2")]:
         seen = reachable(lineup(v), v)
         assert stp in seen and ({"STP1", "STP2"} - {stp}).isdisjoint(seen), v
+
+
+def test_tee_lines_end_at_the_arm_ports():
+    from lineup.pdf import _line_points
+    from lineup.solver import port_pos
+
+    tee = {"id": "X1", "kind": "tee", "x": 704, "y": 318, "o": "h", "label": "", "r": 0}
+    assert [port_pos(tee, k) for k in range(3)] == [(690, 318), (718, 318), (704, 332)]
+    assert port_pos({**tee, "r": 90}, 2) == (690, 318)  # stem turned to the left
+    temp = {"items": [tee], "lines": []}
+    line = {"id": "L1", "a": "X1", "pa": 1, "b": "CP_14", "pts": []}
+    assert _line_points(NETWORK, temp, line) == [(718, 318), (1098, 318)]
+    st = lineup(temp={"items": [tee], "lines": [line, {"id": "L2", "a": "CP_10", "b": "X1", "pb": 0, "pts": []}]})
+    assert "CP_14" in reachable(st, "CP_10")
+    build_pdf(NETWORK, st, "tee")

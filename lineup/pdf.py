@@ -13,8 +13,8 @@ from reportlab.lib.colors import HexColor, white
 from reportlab.lib.pagesizes import A3, landscape
 from reportlab.pdfgen import canvas as pdfcanvas
 
-from .solver import (TEMP_KINDS, active, build_graph, cond_ok, line_active, notes as state_notes, passable,
-                     path_info, pipe_mode, temp_item, temp_of)
+from .solver import (ARM, PORTS, TEMP_KINDS, active, build_graph, cond_ok, line_active, notes as state_notes,
+                     part_angle, passable, path_info, pipe_mode, port_pos, temp_item, temp_of)
 
 OPEN = HexColor("#22b14c")
 CLOSED = HexColor("#e02424")
@@ -203,14 +203,19 @@ def _valve(pg, x, y, angle, open_, blocked, auto=False, temp=False, choke=False)
 
 
 
-def _pos(net, temp, iid):
-    n = net["nodes"].get(iid) or temp_item(temp, iid)
+def _pos(net, temp, iid, port=None):
+    """Where a line ends: a node, a temporary part, or a port of a T / 4-way (mirrors endPos in main.js)."""
+    n = net["nodes"].get(iid)
+    if n is None:
+        n = temp_item(temp, iid) or {}
+        if port is not None and n.get("kind") in PORTS:
+            return port_pos(n, port)
     return (n["x"], n["y"])
 
 
 def _line_points(net, temp, line):
     """Straight segments: start, bends, end; without bends an elbow. Mirrors linePoints() in main.js."""
-    a, b = _pos(net, temp, line["a"]), _pos(net, temp, line["b"])
+    a, b = _pos(net, temp, line["a"], line.get("pa")), _pos(net, temp, line["b"], line.get("pb"))
     bends = [tuple(p) for p in line.get("pts", [])]
     pts = [a, *bends]
     last = pts[-1]
@@ -425,7 +430,7 @@ def _draw_network(pg, net, state, graph, infos):
         pg.text(x, y, s, 10, anchor, True, HOSE)
     for it in temp["items"]:
         x, y, kind = it["x"], it["y"], it["kind"]
-        ang = -90 if it.get("o") == "v" else 0
+        ang = part_angle(it)
         ca, sa = math.cos(math.radians(ang)), math.sin(math.radians(ang))
 
         def rot(px, py):
@@ -434,31 +439,27 @@ def _draw_network(pg, net, state, graph, infos):
         if kind == "text":
             pg.text(x, y, it.get("label") or "Text", 11, "start", True, HOSE)
             continue
-        if kind in ("valve", "lotorq"):
+        if kind == "valve":
             _valve(pg, x, y, ang, valves.get(it["id"]) == "open", it["id"] in warn, temp=True)
-            if kind == "lotorq":
-                pg.circle(x, y, 3.5, fill=white, width=1.3)
-        elif kind in ("tee", "cross"):
-            pg.rect(x - 6, y - 6, 12, 12, fill=white, stroke=HOSE, width=2)
-            if kind == "tee":
-                pg.line([rot(-4, -3), rot(4, -3)], HOSE, 1.6)
-                pg.line([rot(0, -3), rot(0, 4)], HOSE, 1.6)
-            else:
-                pg.line([(x - 4, y), (x + 4, y)], HOSE, 1.6)
-                pg.line([(x, y - 4), (x, y + 4)], HOSE, 1.6)
+        elif kind in PORTS:
+            # one arm per port, like the fitting itself
+            for px, py in PORTS[kind]:
+                pg.line([(x, y), rot(px, py)], HOSE, 5)
+            pg.rect(x - 4, y - 4, 8, 8, fill=HOSE, stroke=HOSE, width=0.5)
         elif kind == "cap":
             pg.poly([rot(-3, -9), rot(3, -9), rot(3, 9), rot(-3, 9)], HOSE, DARK, 1)
         if it.get("label"):
-            if it.get("o") == "v":
-                pg.text(x + 15, y + 4, it["label"], 10, "start", True, HOSE)
+            off = ARM + 8 if kind in PORTS else 15
+            if it.get("o") == "v" and kind not in PORTS:
+                pg.text(x + off, y + 4, it["label"], 10, "start", True, HOSE)
             else:
-                pg.text(x, y - 15, it["label"], 10, "middle", True, HOSE)
+                pg.text(x, y - off, it["label"], 10, "middle", True, HOSE)
 
 
 def _name(net, state, nid):
     n = net["nodes"].get(nid)
     if n:
-        return (n.get("label") or nid).replace("\n", " ")
+        return (n.get("name") or n.get("label") or nid).replace("\n", " ")
     it = temp_item(temp_of(net, state), nid)
     if it:
         return it.get("label") or f"{TEMP_KINDS[it['kind']][1]} (temp.)"
@@ -515,7 +516,7 @@ def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = 
     nodes = net["nodes"]
     valves = state["valves"]
     temp = temp_of(net, state)
-    temp_valves = [i for i in temp["items"] if i["kind"] in ("valve", "lotorq")]
+    temp_valves = [i for i in temp["items"] if i["kind"] == "valve"]
     real_valves = [n for n in nodes.values() if n["type"] == "valve"]
 
     def section(title, items, x, y):
@@ -554,7 +555,7 @@ def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = 
     y3 = section("BOP", [f"{r['label']}: {valves.get(r['id'], 'open').upper()}" for r in rams] +
                  [f"Pipe: {PIPE_TEXT[pipe_mode(state)]}"], col[2], y)
     rig = [f"{TEMP_KINDS[i['kind']][1]}{': ' + i['label'] if i.get('label') else ''}"
-           for i in temp["items"] if i["kind"] not in ("valve", "lotorq", "text")]
+           for i in temp["items"] if i["kind"] not in ("valve", "text")]
     rig += [f"Line{' ' + ln['label'] if ln.get('label') else ''}: {_name(net, state, ln['a'])} -> "
             f"{_name(net, state, ln['b'])} ({ln.get('rating', '15k')})" for ln in temp["lines"]]
     y3 = section("Temporary rig-up", rig, col[2], y3)

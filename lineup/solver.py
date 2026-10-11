@@ -7,6 +7,8 @@ browser; Python only needs to describe a saved path for the PDF.
 
 from __future__ import annotations
 
+import math
+
 
 def pipe_mode(state: dict) -> str:
     """'none', 'drilling' or 'hangoff' (older saves used the boolean pipe_in_hole)."""
@@ -27,7 +29,6 @@ def active(node: dict | None, state: dict) -> bool:
 # Temporary rig-up: state["temp"] = {"items": [...], "lines": [...]} (see migrateTemp in main.js).
 TEMP_KINDS = {
     "valve": ("valve", "Valve"),
-    "lotorq": ("valve", "Lo-Torq valve"),
     "tee": ("junction", "T-piece"),
     "cross": ("junction", "4-way piece"),
     "cap": ("cap", "Blind cap"),
@@ -43,7 +44,9 @@ def temp_of(net: dict, state: dict) -> dict:
     """Temporary items and lines; converts the older state["hoses"] format (ids kept)."""
     if "temp" in state:
         t = state["temp"] or {}
-        return {"items": [i for i in t.get("items", []) if i.get("kind") in TEMP_KINDS], "lines": t.get("lines", [])}
+        # older saves had a separate Lo-Torq valve; it is the same as a valve
+        items = [{**i, "kind": "valve"} if i.get("kind") == "lotorq" else i for i in t.get("items", [])]
+        return {"items": [i for i in items if i.get("kind") in TEMP_KINDS], "lines": t.get("lines", [])}
     items, lines = [], []
     for h in state.get("hoses", []):
         a, b = net["nodes"].get(h["a"]), net["nodes"].get(h["b"])
@@ -63,6 +66,23 @@ def temp_of(net: dict, state: dict) -> dict:
 
 def temp_item(temp: dict, iid: str) -> dict | None:
     return next((i for i in temp["items"] if i["id"] == iid), None)
+
+
+# T-pieces and 4-ways: a port at the end of each arm (line["pa"] / line["pb"]). Mirrors PORTS in main.js.
+ARM = 14
+PORTS = {"tee": [(-ARM, 0), (ARM, 0), (0, ARM)], "cross": [(-ARM, 0), (ARM, 0), (0, -ARM), (0, ARM)]}
+
+
+def part_angle(it: dict) -> float:
+    """Rotation of a temporary part in degrees (older saves only have o: 'h' / 'v')."""
+    r = it.get("r")
+    return r if r is not None else (-90 if it.get("o") == "v" else 0)
+
+
+def port_pos(it: dict, k: int) -> tuple[int, int]:
+    px, py = PORTS[it["kind"]][k]
+    a = math.radians(part_angle(it))
+    return (round(it["x"] + px * math.cos(a) - py * math.sin(a)), round(it["y"] + px * math.sin(a) + py * math.cos(a)))
 
 
 def temp_node(it: dict) -> dict:
