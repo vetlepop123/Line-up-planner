@@ -583,7 +583,7 @@ LINEUPS = {
     "drill": {
         "label": "Drilling", "group": "drill", "pipe": "drilling",
         "title": "Normal drilling: all mud pumps up both standpipes, top drive, string, annulus, flowline",
-        "gauges": ["59", "56", "LT"],
+        "gauges": ["59", "56", "55", "LT"],
         "paths": [{
             "name": "Drilling", "color": _COLOR["Green"],
             "routes": [
@@ -600,7 +600,7 @@ LINEUPS = {
     "drill_boost": {
         "label": "Drilling + boost", "group": "drill", "pipe": "drilling",
         "title": "Drilling with boost: HEX #1 and #2 up standpipe 2 to the string, HEX #3 up standpipe 1 and down the boost line",
-        "gauges": ["59", "56"],
+        "gauges": ["59", "56", "LT"],
         "paths": [{
             "name": "Drilling", "color": _COLOR["Green"],
             "routes": [
