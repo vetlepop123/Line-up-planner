@@ -8,14 +8,18 @@ Interactive line-up tool for the standpipe manifold, pump room, choke & kill man
   (closed valves on the route opened, branches leaving it closed). Undo is available. Rams are never operated.
 - **Warnings** when paths conflict (shared pipe, flowing against each other, connected through open valves,
   open to an outlet) and when a path passes a closed valve.
-- **Standard line-ups** – toolbar buttons for *Drilling*, *Drilling + boost* and *Choke line-up*. Drilling is either
-  with or without boost (applying one replaces the other); the choke line-up can be added on its own. Defined in
+- **Standard line-ups** – toolbar buttons for *Drilling*, *Drilling + boost*, *Tripping* and *Choke line-up*. Drilling
+  (with or without boost) and tripping replace each other; the choke line-up can be added on its own. Defined in
   `LINEUPS` in `lineup/network.py`.
+- **Reset all** – back to normal (valves closed, rams open, no pipe, pumps off, no paths, no rig-up); Undo available.
 - Paths use ten fixed, easy-to-tell-apart colours.
 - **Pipe modes** – no pipe, string on top drive, or string hung off (open top just above the UPR).
-- **Temporary rig-up** – temporary lines (straight segments), valves, T-pieces, 4-way pieces,
-  blind caps and free text labels, attached to the purple connection points.
-- Line-ups can be **saved / loaded**, downloaded as a file, and printed to **PDF**.
+- **Diverter / top of riser** – flowline, trip tank (trip flow) and fill-up lines, each with a valve, and a trip tank pump.
+- **Temporary rig-up** – temporary lines (straight segments), Lo-Torq valves, check valves (flow in the arrow
+  direction only), choke valves, filters, tanks, T-pieces, 4-way pieces, blind caps and free text labels, attached to the purple
+  connection points. Valves, filters and tanks can be drawn larger.
+- Line-ups can be **saved / loaded**, downloaded as a file, and printed to **PDF** – choose which parts of the
+  drawing to print (pump room, standpipe manifold, choke & kill manifold, BOP).
 
 ## Run locally
 

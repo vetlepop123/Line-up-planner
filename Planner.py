@@ -97,9 +97,13 @@ with st.sidebar:
             st.error(f"Save failed: {e}")
     c2.button("🆕 New", width="stretch", on_click=_new)
 
+    area_label = {a["id"]: a["label"] for a in NETWORK["areas"]}
+    pdf_areas = st.multiselect("Parts to print", list(area_label), default=list(area_label),
+                               format_func=lambda a: area_label[a], key="pdf_areas",
+                               help="The drawing on page 1 shows only these parts. Page 2 always lists the whole line-up.")
     st.download_button(
-        "🖨️ PDF print-out", width="stretch", type="primary",
-        data=build_pdf(NETWORK, state, ss.name, ss.notes, ss.author, path_warnings),
+        "🖨️ PDF print-out", width="stretch", type="primary", disabled=not pdf_areas,
+        data=build_pdf(NETWORK, state, ss.name, ss.notes, ss.author, path_warnings, areas=pdf_areas or None),
         file_name=f"{slug(ss.name or 'lineup')}.pdf", mime="application/pdf",
     )
 

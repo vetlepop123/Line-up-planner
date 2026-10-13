@@ -163,32 +163,48 @@ def _label_pos(n, off):
     return n["x"] + off, n["y"] + 4, "start"
 
 
-def _bounds(net, temp):
+def _in_areas(item, areas):
+    """Is a node or label part of the selected parts of the drawing? (areas None = everything)"""
+    return areas is None or item.get("area") in areas
+
+
+def _bounds(net, temp, areas=None):
+    """Drawing extent. With a selection of parts only those parts count (temporary rig-up is then left out,
+    it is drawn where it falls inside)."""
+    nodes = net["nodes"]
     xs, ys = [], []
-    for n in [*net["nodes"].values(), *temp["items"]]:
+    items = [n for n in nodes.values() if _in_areas(n, areas)] + (temp["items"] if areas is None else [])
+    for n in items:
         xs.append(n["x"]); ys.append(n["y"])
-    for line in temp["lines"]:
-        for x, y in line.get("pts", []):
-            xs.append(x); ys.append(y)
+    if areas is None:
+        for line in temp["lines"]:
+            for x, y in line.get("pts", []):
+                xs.append(x); ys.append(y)
     for e in net["edges"]:
+        if not (_in_areas(nodes[e["a"]], areas) and _in_areas(nodes[e["b"]], areas)):
+            continue
         for seg in e["segs"]:
             for x, y in seg:
                 xs.append(x); ys.append(y)
     for d in net["decor"]:
+        if not _in_areas(d, areas):
+            continue
         xs.append(d["x"]); ys.append(d["y"])
         if "w" in d:
             xs.append(d["x"] + d["w"]); ys.append(d["y"] + d["h"])
-    return min(xs) - 30, min(ys) - 30, max(xs) - min(xs) + 60, max(ys) - min(ys) + 60
+    pad = 30 if areas is None else 70  # a selection is clipped, so leave room for labels beside the outer nodes
+    return min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad
 
 
-def _valve(pg, x, y, angle, open_, blocked, auto=False, temp=False, choke=False):
+def _valve(pg, x, y, angle, open_, blocked, auto=False, temp=False, choke=False, scale=1.0):
     ca, sa = math.cos(math.radians(angle)), math.sin(math.radians(angle))
 
     def rot(px, py):
+        px, py = px * scale, py * scale
         return x + px * ca - py * sa, y + px * sa + py * ca
 
     if blocked:
-        pg.circle(x, y, 13, stroke=ORANGE, width=3)
+        pg.circle(x, y, 13 * scale, stroke=ORANGE, width=3)
     if auto:
         pg.line([rot(0, 0), rot(0, -12)], DARK, 1.2)
         pg.poly([rot(-5, -19), rot(5, -19), rot(5, -11), rot(-5, -11)], white, width=1.2)
@@ -256,7 +272,9 @@ def _arrows(pg, pts, color, dx=0.0, scale=1.0):
             d -= s
 
 
-def _draw_network(pg, net, state, graph, infos):
+def _draw_network(pg, net, state, graph, infos, areas=None):
+    """areas: the parts of the drawing to show (None = all). Pipes to a part that is left out are
+    still drawn and run off the edge of the (clipped) drawing."""
     nodes = net["nodes"]
     colors = {k: HexColor(v) for k, v in net["colors"].items()}
     valves = state["valves"]
@@ -275,6 +293,8 @@ def _draw_network(pg, net, state, graph, infos):
     warn = {n for i in infos for n in i["closed_inside"]}
 
     for d in net["decor"]:
+        if not _in_areas(d, areas):
+            continue
         if d["t"] == "text":
             pg.text(d["x"], d["y"], d["s"], d["size"], d["anchor"], d["weight"] == "bold", HexColor(d["color"]))
         elif d["t"] == "rect":
@@ -284,7 +304,9 @@ def _draw_network(pg, net, state, graph, infos):
             pg.rect(rx - 3, ry, rw + 6, rh, fill=HexColor("#cfd4da"), stroke=HexColor("#444444"))
             pg.rect(d["x"], d["y"], d["w"], d["h"], fill=HexColor("#cfd4da"), stroke=HexColor("#444444"), width=1.5, radius=6)
 
-    visible = [e for e in net["edges"] if cond_ok(e.get("cond"), state)]
+    visible = [e for e in net["edges"] if cond_ok(e.get("cond"), state)
+               and (_in_areas(nodes[e["a"]], areas) or _in_areas(nodes[e["b"]], areas))]
+    shown = {e["id"] for e in visible}
 
     def draw_line(e):
         for seg in e["segs"]:
@@ -338,6 +360,8 @@ def _draw_network(pg, net, state, graph, infos):
             continue
         for s in p.get("steps", []):
             e = emap.get(s["e"])
+            if e and not e.get("line") and e["id"] not in shown:
+                continue
             pts = e and _edge_points(net, state, e, temp)
             if not pts:
                 continue
@@ -352,7 +376,7 @@ def _draw_network(pg, net, state, graph, infos):
 
     # nodes
     for n in nodes.values():
-        if not active(n, state):
+        if not active(n, state) or not _in_areas(n, areas):
             continue
         t = n["type"]
         if t == "valve":
@@ -439,8 +463,24 @@ def _draw_network(pg, net, state, graph, infos):
         if kind == "text":
             pg.text(x, y, it.get("label") or "Text", 11, "start", True, HOSE)
             continue
-        if kind == "valve":
-            _valve(pg, x, y, ang, valves.get(it["id"]) == "open", it["id"] in warn, temp=True)
+        z = it.get("size") or 1
+        if kind in ("valve", "choke"):
+            _valve(pg, x, y, ang, valves.get(it["id"]) == "open", it["id"] in warn, temp=True,
+                   choke=kind == "choke", scale=z)
+            if kind == "valve":  # Lo-Torq
+                pg.circle(x, y, 3.5 * z, fill=white, width=1.3)
+        elif kind == "check":  # inlet half outlined, outlet half filled, arrow in the flow direction
+            pg.poly([rot(-10 * z, -7 * z), rot(0, 0), rot(-10 * z, 7 * z)], white, HOSE, 1.3)
+            pg.poly([rot(10 * z, -7 * z), rot(0, 0), rot(10 * z, 7 * z)], HOSE, HOSE, 1.3)
+            pg.line([rot(-7 * z, -12 * z), rot(5 * z, -12 * z)], DARK, 1.4)
+            pg.line([rot(2 * z, -15 * z), rot(7 * z, -12 * z), rot(2 * z, -9 * z)], DARK, 1.4)
+        elif kind == "filter":  # diamond with a dashed screen across
+            pg.poly([rot(-12 * z, 0), rot(0, -9 * z), rot(12 * z, 0), rot(0, 9 * z)], white, HOSE, 1.8)
+            pg.line([rot(0, -9 * z), rot(0, 9 * z)], HOSE, 1.4, dash=[2.5, 2])
+        elif kind == "tank":
+            pg.rect(x - 20 * z, y - 15 * z, 40 * z, 30 * z, fill=HexColor("#eceff1"), stroke=HOSE, width=2, radius=3)
+            pg.text(x, y + 4, it.get("label") or "TANK", 9, "middle", True)
+            continue
         elif kind in PORTS:
             # one arm per port, like the fitting itself
             for px, py in PORTS[kind]:
@@ -449,7 +489,7 @@ def _draw_network(pg, net, state, graph, infos):
         elif kind == "cap":
             pg.poly([rot(-3, -9), rot(3, -9), rot(3, 9), rot(-3, 9)], HOSE, DARK, 1)
         if it.get("label"):
-            off = ARM + 8 if kind in PORTS else 15
+            off = (ARM + 8 if kind in ("tee", "cross") else 15) * z
             if it.get("o") == "v" and kind not in PORTS:
                 pg.text(x + off, y + 4, it["label"], 10, "start", True, HOSE)
             else:
@@ -467,9 +507,15 @@ def _name(net, state, nid):
 
 
 def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = "",
-              warnings: dict | None = None) -> bytes:
-    """warnings: path id -> conflict warnings, as computed by the canvas (pathWarnings in main.js)."""
+              warnings: dict | None = None, areas=None) -> bytes:
+    """warnings: path id -> conflict warnings, as computed by the canvas (pathWarnings in main.js).
+    areas: ids of the parts of the drawing to print (see AREAS in network.py); None or all = everything.
+    Page 2 (the lists) always covers the whole line-up."""
     warnings = warnings or {}
+    all_areas = [a["id"] for a in net.get("areas", [])]
+    areas = set(areas) if areas else None
+    if areas is not None and areas >= set(all_areas):
+        areas = None
     graph = build_graph(net, state)
     paths = state.get("paths", [])
     infos = [path_info(net, state, p) for p in paths]
@@ -501,8 +547,21 @@ def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = 
 
     # ---- page 1: drawing, with a key of the traced paths along the bottom
     header(1)
-    pg = _Page(c, _bounds(net, temp_of(net, state)), (25, 70, W - 50, H - 125))
-    _draw_network(pg, net, state, graph, infos)
+    bounds = _bounds(net, temp_of(net, state), areas)
+    pg = _Page(c, bounds, (25, 70, W - 50, H - 125))
+    c.saveState()
+    if areas is not None:
+        # only the selected parts: anything reaching outside them is cut off at the edge
+        bx, by, bw, bh = bounds
+        clip = c.beginPath()
+        clip.rect(*pg.p(bx, by + bh), bw * pg.s, bh * pg.s)
+        c.clipPath(clip, stroke=0, fill=0)
+    _draw_network(pg, net, state, graph, infos, areas)
+    c.restoreState()
+    if areas is not None:
+        c.setFont("Helvetica", 9)
+        c.setFillColor(DARK)
+        c.drawString(30, H - 58, "Showing: " + ", ".join(a["label"] for a in net["areas"] if a["id"] in areas))
     for k, (p, i) in enumerate(zip(paths, infos)):
         path_title(p, i, 30 + (k // 4) * 380, 52 - (k % 4) * 13)
     c.setFont("Helvetica", 9)
@@ -516,7 +575,7 @@ def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = 
     nodes = net["nodes"]
     valves = state["valves"]
     temp = temp_of(net, state)
-    temp_valves = [i for i in temp["items"] if i["kind"] == "valve"]
+    temp_valves = [i for i in temp["items"] if i["kind"] in ("valve", "choke")]
     real_valves = [n for n in nodes.values() if n["type"] == "valve"]
 
     def section(title, items, x, y):
@@ -555,7 +614,7 @@ def build_pdf(net: dict, state: dict, name: str, notes: str = "", author: str = 
     y3 = section("BOP", [f"{r['label']}: {valves.get(r['id'], 'open').upper()}" for r in rams] +
                  [f"Pipe: {PIPE_TEXT[pipe_mode(state)]}"], col[2], y)
     rig = [f"{TEMP_KINDS[i['kind']][1]}{': ' + i['label'] if i.get('label') else ''}"
-           for i in temp["items"] if i["kind"] not in ("valve", "text")]
+           for i in temp["items"] if i["kind"] not in ("valve", "choke", "text")]
     rig += [f"Line{' ' + ln['label'] if ln.get('label') else ''}: {_name(net, state, ln['a'])} -> "
             f"{_name(net, state, ln['b'])} ({ln.get('rating', '15k')})" for ln in temp["lines"]]
     y3 = section("Temporary rig-up", rig, col[2], y3)

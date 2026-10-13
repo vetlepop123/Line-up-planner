@@ -28,7 +28,11 @@ def active(node: dict | None, state: dict) -> bool:
 
 # Temporary rig-up: state["temp"] = {"items": [...], "lines": [...]} (see migrateTemp in main.js).
 TEMP_KINDS = {
-    "valve": ("valve", "Valve"),
+    "valve": ("valve", "Lo-Torq valve"),
+    "choke": ("valve", "Choke valve"),
+    "check": ("check", "Check valve"),
+    "filter": ("junction", "Filter"),
+    "tank": ("vessel", "Tank"),
     "tee": ("junction", "T-piece"),
     "cross": ("junction", "4-way piece"),
     "cap": ("cap", "Blind cap"),
@@ -68,9 +72,11 @@ def temp_item(temp: dict, iid: str) -> dict | None:
     return next((i for i in temp["items"] if i["id"] == iid), None)
 
 
-# T-pieces and 4-ways: a port at the end of each arm (line["pa"] / line["pb"]). Mirrors PORTS in main.js.
+# T-pieces and 4-ways: a port at the end of each arm (line["pa"] / line["pb"]); a check valve has an
+# inlet (port 0) and an outlet (port 1). Mirrors PORTS in main.js. Valves can have a size (1, 1.5, 2).
 ARM = 14
-PORTS = {"tee": [(-ARM, 0), (ARM, 0), (0, ARM)], "cross": [(-ARM, 0), (ARM, 0), (0, -ARM), (0, ARM)]}
+PORTS = {"tee": [(-ARM, 0), (ARM, 0), (0, ARM)], "cross": [(-ARM, 0), (ARM, 0), (0, -ARM), (0, ARM)],
+         "check": [(-10, 0), (10, 0)], "filter": [(-12, 0), (12, 0)]}
 
 
 def part_angle(it: dict) -> float:
@@ -80,7 +86,8 @@ def part_angle(it: dict) -> float:
 
 
 def port_pos(it: dict, k: int) -> tuple[int, int]:
-    px, py = PORTS[it["kind"]][k]
+    z = it.get("size") or 1
+    px, py = (v * z for v in PORTS[it["kind"]][k])
     a = math.radians(part_angle(it))
     return (round(it["x"] + px * math.cos(a) - py * math.sin(a)), round(it["y"] + px * math.sin(a) + py * math.cos(a)))
 

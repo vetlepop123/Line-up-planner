@@ -216,3 +216,50 @@ def test_tee_lines_end_at_the_arm_ports():
     st = lineup(temp={"items": [tee], "lines": [line, {"id": "L2", "a": "CP_10", "b": "X1", "pb": 0, "pts": []}]})
     assert "CP_14" in reachable(st, "CP_10")
     build_pdf(NETWORK, st, "tee")
+
+
+def test_diverter_lines_each_have_a_valve():
+    assert "BELL" not in reachable(lineup(), "RISER_TOP")
+    assert "BELL" in reachable(lineup("FLV"), "RISER_TOP")
+    assert "TRIP_TANK" in reachable(lineup("TTV"), "RISER_TOP")    # trip flow
+    assert "RISER_TOP" in reachable(lineup("FUV"), "TT_PUMP")      # fill-up from the trip tank pump
+    assert "TRIP_TANK" not in reachable(lineup("FLV"), "RISER_TOP")
+
+
+def test_every_node_belongs_to_a_part_and_pdf_prints_a_selection():
+    ids = {a["id"] for a in NETWORK["areas"]}
+    assert all(n["area"] in ids for n in NODES.values())
+    for sel in (["bop"], ["pump", "standpipe"], ["choke"], list(ids)):
+        assert build_pdf(NETWORK, lineup(), "parts", areas=sel)[:4] == b"%PDF"
+
+
+def test_temporary_valve_kinds_and_sizes():
+    from lineup.solver import port_pos
+
+    check = {"id": "X1", "kind": "check", "x": 700, "y": 318, "o": "h", "label": "", "r": 0, "size": 2}
+    assert [port_pos(check, k) for k in range(2)] == [(680, 318), (720, 318)]
+    rig = {"items": [check, {"id": "X2", "kind": "choke", "x": 800, "y": 300, "o": "h", "label": "", "size": 1.5},
+                     {"id": "X3", "kind": "valve", "x": 900, "y": 300, "o": "h", "label": ""}],
+           "lines": [{"id": "L1", "a": "CP_10", "b": "X1", "pb": 0, "pts": []},
+                     {"id": "L2", "a": "X1", "pa": 1, "b": "CP_14", "pts": []}]}
+    st = lineup(temp=rig)
+    nodes, _ = build_graph(NETWORK, st)
+    assert (nodes["X1"]["type"], nodes["X2"]["type"], nodes["X3"]["type"]) == ("check", "valve", "valve")
+    assert "CP_14" in reachable(st, "CP_10")   # check valves are not operated
+    build_pdf(NETWORK, st, "valves")
+
+
+def test_tripping_loop_and_filter_tank_parts():
+    trip = NETWORK["lineups"]["trip"]
+    assert trip["group"] == NETWORK["lineups"]["drill"]["group"]   # tripping replaces drilling
+    st = lineup("TTV", "FUV")
+    assert {"TRIP_TANK", "TT_PUMP"} <= reachable(st, "RISER_TOP")
+    rig = {"items": [{"id": "X1", "kind": "filter", "x": 710, "y": 318, "o": "h", "label": "", "r": 0},
+                     {"id": "X2", "kind": "tank", "x": 756, "y": 318, "o": "h", "label": "Mud tank", "size": 1.5}],
+           "lines": [{"id": "L1", "a": "CP_10", "b": "X1", "pb": 0, "pts": []},
+                     {"id": "L2", "a": "X1", "pa": 1, "b": "X2", "pts": []}]}
+    st = lineup(temp=rig)
+    nodes, _ = build_graph(NETWORK, st)
+    assert (nodes["X1"]["type"], nodes["X2"]["type"]) == ("junction", "vessel")
+    assert "X2" in reachable(st, "CP_10")
+    build_pdf(NETWORK, st, "filter")

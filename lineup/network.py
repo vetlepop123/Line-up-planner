@@ -38,11 +38,25 @@ NODES: dict[str, dict] = {}
 EDGES: list[dict] = []
 DECOR: list[dict] = []
 
+# Parts of the drawing; every node and label belongs to one (the PDF can print a selection).
+AREAS = [
+    {"id": "pump", "label": "Pump room"},
+    {"id": "standpipe", "label": "Standpipe manifold (drill floor)"},
+    {"id": "choke", "label": "Choke & kill manifold"},
+    {"id": "bop", "label": "BOP"},
+]
+_area = [None]
+
+
+def area(aid):
+    """Everything defined after this call belongs to part `aid` (see AREAS)."""
+    _area[0] = aid
+
 
 def _node(nid, ntype, x, y, **kw):
     if nid in NODES:
         raise ValueError(f"duplicate node id {nid}")
-    NODES[nid] = {"id": nid, "type": ntype, "x": x, "y": y, **kw}
+    NODES[nid] = {"id": nid, "type": ntype, "x": x, "y": y, "area": _area[0], **kw}
     return nid
 
 
@@ -79,8 +93,8 @@ def cp(nid, x, y, label, lp="l", **kw):
     return _node(nid, "cp", x, y, label=label, lp=lp, **kw)
 
 
-def pump(nid, x, y, label, shape="circle"):
-    return _node(nid, "pump", x, y, label=label, shape=shape)
+def pump(nid, x, y, label, shape="circle", **kw):
+    return _node(nid, "pump", x, y, label=label, shape=shape, **kw)
 
 
 def ram(nid, y, kind, label, **kw):
@@ -123,17 +137,18 @@ def chain(*ids, r="15k"):
 
 def text(x, y, s, size=11, anchor="start", weight="normal", color="#333"):
     DECOR.append({"t": "text", "x": x, "y": y, "s": s, "size": size,
-                  "anchor": anchor, "weight": weight, "color": color})
+                  "anchor": anchor, "weight": weight, "color": color, "area": _area[0]})
 
 
 def rect(x, y, w, h, stroke="#999", fill="none", dash=None):
     DECOR.append({"t": "rect", "x": x, "y": y, "w": w, "h": h,
-                  "stroke": stroke, "fill": fill, "dash": dash})
+                  "stroke": stroke, "fill": fill, "dash": dash, "area": _area[0]})
 
 
 SP = "7.5k"
 
 # ---------------------------------------------------------------- standpipe manifold
+area("standpipe")
 cp("CP_61", 180, 215, "Blind above 61", lp="l")
 valve("61", 180, 265)
 junction("SP_A", 180, 325)
@@ -216,6 +231,7 @@ edge("YP", "CP_YP", r=SP)
 text(375, 300, "STANDPIPE MANIFOLD", 13, weight="bold")
 
 # ---------------------------------------------------------------- pump room
+area("pump")
 # Each pump: discharge valve, then one valve up to the STP#1 header (H1) and one
 # to the STP#2 header (H2). HEX #3 also feeds the shear line through P10.
 # Confirmed: P8, P13, P14 go to standpipe 1; P9, P12, P15 to standpipe 2. No other valves.
@@ -294,6 +310,7 @@ text(20, 690 + PR, "SHEAR LINE", 10, weight="bold")
 text(330, 1035 + PR, "PUMP ROOM", 13, weight="bold")
 
 # ---------------------------------------------------------------- choke & kill manifold
+area("choke")
 vessel("POORBOY", 590, 280, "POOR BOY DEGASSER", rect=[565, 110, 50, 340])
 text(590, 98, "VENT TO DERRICK", 9, anchor="middle")
 buffer("BUF_L", 895, 202, "LHS BUFFER", rect=[800, 190, 190, 24])
@@ -451,11 +468,12 @@ edge("K", "MP_ISO_K")
 text(745, 105, "CHOKE & KILL MANIFOLD", 13, weight="bold")
 
 # ---------------------------------------------------------------- BOP
+area("bop")
 BORE_X = 1490
 KILL_X = 1320
 CHOKE_X = 1660
 
-DECOR.append({"t": "bop", "x": BORE_X - 60, "y": 545, "w": 120, "h": 550,
+DECOR.append({"t": "bop", "area": "bop", "x": BORE_X - 60, "y": 545, "w": 120, "h": 550,
               "riser": [BORE_X - 25, 440, 50, 105]})
 text(BORE_X, 1160, "BOP", 13, anchor="middle", weight="bold")
 text(KILL_X - 8, 400, "KILL", 11, anchor="end", weight="bold")
@@ -472,7 +490,6 @@ chain("TDS", "IBOP_A", "IBOP_M", "TD_SUB")
 edge("TD_SUB", "TD_OPEN", cond="notd")
 
 bore("RISER_TOP", 450, "Riser top")
-outlet("BELL", 1435, 450, "RISER → FLOWLINE", lp="l")
 bore("BOOST_IN", 500, "Riser at boost inlet")
 ram("UA", 565, "annular", "Upper annular")
 bore("K_UP", 610, "Bore at upper kill outlet")
@@ -493,7 +510,25 @@ bore("WELLHEAD", 1090, "Wellhead")
 outlet("WELL", BORE_X, 1125, "WELL (below BOP)", lp="r")
 chain("RISER_TOP", "BOOST_IN", "UA", "K_UP", "LA", "B_LA", "BSR", "C_UP", "CSR",
       "K_MID", "B_HANG", "UPR", "MPR", "C_LOW", "LPR", "K_LOW", "WELLHEAD", "WELL", r="bore")
-edge("RISER_TOP", "BELL", r="lp")
+
+# diverter / top of riser: three lines, each with a valve
+#   flowline:  riser -> flowline valve -> flowline
+#   trip tank: riser -> trip tank valve -> trip tank (trip flow)
+#   fill-up:   trip tank -> trip tank pump -> fill-up valve -> riser
+DIV_X = 1430
+valve("FLV", DIV_X, 450, o="h", label="Flowline", name="Flowline valve (diverter)")
+outlet("BELL", 1380, 450, "FLOWLINE", lp="t")
+valve("TTV", DIV_X, 480, o="h", label="Trip tank", name="Trip tank valve (diverter)")
+valve("FUV", DIV_X, 510, o="h", label="Fill-up", name="Fill-up valve (diverter)")
+pump("TT_PUMP", 1235, 905, "TT PUMP", area="choke")
+edge("RISER_TOP", "FLV", r="lp")
+edge("FLV", "BELL", r="lp")
+edge("RISER_TOP", "TTV", r="lp", segs=[[[BORE_X, 480], [DIV_X, 480]]])
+edge("TTV", "TRIP_TANK", (1215, 480), (1215, 785), (1040, 785), r="lp", over=True,
+     tags=[{"x": 1060, "y": 779, "s": "TRIP FLOW"}])
+edge("TRIP_TANK", "TT_PUMP", (960, 905), r="lp")
+edge("TT_PUMP", "FUV", (1235, 510), r="lp", over=True, tags=[{"x": 1242, "y": 860, "s": "FILL-UP"}])
+edge("FUV", "RISER_TOP", r="lp", segs=[[[DIV_X, 510], [BORE_X, 510]]])
 
 # drill string (inside of the pipe). The bore nodes above are the annulus around it.
 _node("S_BSR", "string", BORE_X, 730, label="Drill pipe at BSR")
@@ -569,13 +604,14 @@ _COLOR = {c["name"]: c["hex"] for c in PATH_COLORS}
 # so the path reads pump -> outlet. "open" lists the valves the line-up opens (default: every valve on the routes);
 # branches leaving the paths are closed at their first valve. "gauges": valves opened only so the
 # gauges read pressure; they are not part of a path (no arrows) and are left open by the isolation.
-# Applying a line-up replaces the earlier standard paths of the same group, so drilling is either
-# with or without boost; gauge valves of the other line-ups in the group are closed again.
+# Applying a line-up replaces the earlier standard paths of the same group, so drilling (with or without
+# boost) and tripping exclude each other; gauge valves of the other line-ups in the group are closed again.
+# "open_to": outlets a path is meant to stay open to (no leak warning).
 _STRING_AND_ANNULUS = [
     "YP", "SERVICE_LOOP", "TDS", "IBOP_A", "IBOP_M", "TD_SUB",
     "S_BSR", "S_CSR", "S_HANG", "S_BIT", "WELL",
     "WELLHEAD", "K_LOW", "LPR", "C_LOW", "MPR", "UPR", "B_HANG", "K_MID", "CSR", "C_UP",
-    "BSR", "B_LA", "LA", "K_UP", "UA", "BOOST_IN", "RISER_TOP", "BELL",
+    "BSR", "B_LA", "LA", "K_UP", "UA", "BOOST_IN", "RISER_TOP", "FLV", "BELL",
 ]
 _KELLY = ["SP_RT", "62", "63"]
 
@@ -616,6 +652,16 @@ LINEUPS = {
             ],
         }],
     },
+    "trip": {
+        "label": "Tripping", "group": "drill",
+        "title": "Tripping: riser -> trip tank valve -> trip tank -> trip tank pump -> fill-up valve -> riser",
+        "paths": [{
+            "name": "Tripping", "color": _COLOR["Blue"],
+            "routes": [["RISER_TOP", "TTV", "TRIP_TANK", "TT_PUMP", "FUV", "RISER_TOP"]],
+            # the riser stays open to the well below while tripping; that is expected, not a leak
+            "open_to": ["WELL"],
+        }],
+    },
     "choke": {
         "label": "Choke line-up", "group": "choke",
         "title": "Choke lined up for drilling: choke isolation, 7, 11, 15, 18 and 45 open",
@@ -648,6 +694,7 @@ NETWORK = {
     "legend": LEGEND,
     "colors": RATING_COLORS,
     "pipe": PIPE,
+    "areas": AREAS,
     "path_colors": PATH_COLORS,
     "lineups": LINEUPS,
 }

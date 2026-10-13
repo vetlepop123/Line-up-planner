@@ -21,6 +21,7 @@ let NET = null;       // network from Python
 let ST = null;        // current line-up state
 let G = null;         // active graph for ST: {nodes, edges, emap, adj}
 let lastNonce = null;
+let DEFAULT = null;   // default (reset) state from Python
 let frameH = 0;
 let view = null;      // svg viewBox {x, y, w, h}
 let degree = {};
@@ -36,6 +37,7 @@ window.addEventListener("message", (ev) => {
   if (!d || d.type !== "streamlit:render") return;
   const a = d.args;
   NET = a.network;
+  DEFAULT = a.default_state;
   PALETTE = NET.path_colors.map((c) => c.hex);
   computeDegree();
   drawLineupButtons();
@@ -72,7 +74,7 @@ function normalize(state, def) {
   s.paths = (state.paths || []).map((p, i) => ({
     id: p.id || "F" + (i + 1), name: p.name || "Path " + (i + 1), color: p.color || PALETTE[i % PALETTE.length],
     arrows: p.arrows !== false, steps: (p.steps || []).filter((x) => x && x.e && x.from),
-    start: p.start || null, reversed: !!p.reversed, std: p.std || null,
+    start: p.start || null, reversed: !!p.reversed, std: p.std || null, expect: p.expect || [],
   }));
   return s;
 }
@@ -106,10 +108,15 @@ function pipeAt(y) {
 function active(n, st) { return !n || condOk(n.cond, st); }
 
 // ---------------------------------------------------------------- temporary rig-up (mirror of lineup/solver.py)
-// st.temp = {items, lines}. Items: valve | tee | cross | cap | text, placed at x/y with
-// orientation o ("h"/"v"). Lines join connection points and items through optional bend points.
+// st.temp = {items, lines}. Items: valve (Lo-Torq) | choke | check | tee | cross | cap | text, placed at
+// x/y with orientation o ("h"/"v") or rotation r. Valves can have a size (1, 1.5, 2).
+// Lines join connection points and items through optional bend points.
 const TEMP_KINDS = {
-  valve: { type: "valve", name: "Valve" },
+  valve: { type: "valve", name: "Lo-Torq valve" },
+  choke: { type: "valve", name: "Choke valve" },
+  check: { type: "check", name: "Check valve" },
+  filter: { type: "junction", name: "Filter" },
+  tank: { type: "vessel", name: "Tank" },
   tee: { type: "junction", name: "T-piece" },
   cross: { type: "junction", name: "4-way piece" },
   cap: { type: "cap", name: "Blind cap" },
@@ -148,13 +155,20 @@ function tempItem(st, id) { return st.temp.items.find((i) => i.id === id); }
 // T-pieces and 4-ways have a port at the end of each arm; lines attach to a port (line.pa / line.pb).
 // Port positions are relative to the part before rotation; a T's stem points down at angle 0.
 const ARM = 14;
-const PORTS = { tee: [[-ARM, 0], [ARM, 0], [0, ARM]], cross: [[-ARM, 0], [ARM, 0], [0, -ARM], [0, ARM]] };
+// A check valve has two: port 0 is the inlet, port 1 the outlet (flow runs from 0 to 1 only).
+const PORTS = { tee: [[-ARM, 0], [ARM, 0], [0, ARM]], cross: [[-ARM, 0], [ARM, 0], [0, -ARM], [0, ARM]],
+  check: [[-10, 0], [10, 0]], filter: [[-12, 0], [12, 0]] };
+const VALVE_KINDS = ["valve", "choke", "check"];
+const SIZED_KINDS = [...VALVE_KINDS, "filter", "tank"];
+const SIZES = [[1, "Normal"], [1.5, "Large"], [2, "Extra large"]];
+const sizeOf = (it) => it.size || 1;
 
 // rotation of a temporary part in degrees (T-pieces turn in 90° steps; older saves only have o: "h" / "v")
 const partAngle = (it) => it.r ?? (it.o === "v" ? -90 : 0);
 
 function portPos(it, k) {
-  const [px, py] = PORTS[it.kind][k], a = partAngle(it) * Math.PI / 180;
+  const z = sizeOf(it), a = partAngle(it) * Math.PI / 180;
+  const [px, py] = PORTS[it.kind][k].map((v) => v * z);
   return [Math.round(it.x + px * Math.cos(a) - py * Math.sin(a)), Math.round(it.y + px * Math.sin(a) + py * Math.cos(a))];
 }
 
@@ -168,6 +182,20 @@ function nearestPort(it, x, y) {
 function endPos(id, port) {
   const it = tempItem(ST, id);
   return it && PORTS[it.kind] && port != null ? portPos(it, port) : posOf(id);
+}
+
+// port of a temporary line where it meets node nid (undefined if the line is not fitted to a port)
+function portAt(e, nid) {
+  const l = e && e.line && ST.temp.lines.find((x) => x.id === e.line);
+  return l ? (l.a === nid ? l.pa : l.pb) : undefined;
+}
+
+// may flow pass node nid coming in through edge inE (null at a start) and leaving through outE?
+// Only check valves say no: in through the outlet or out through the inlet.
+function checkAllows(nid, inE, outE) {
+  const n = G.nodes[nid];
+  if (!n || n.kind !== "check") return true;
+  return !(inE && portAt(inE, nid) === 1) && portAt(outE, nid) !== 0;
 }
 
 function tempNode(it) {
@@ -363,8 +391,8 @@ function orient(p) {
     if (done.has(s.e)) continue;
     const whole = bfs(G.emap[s.e].a);
     const nodes = new Set(whole.flatMap((x) => [G.emap[x.e].a, G.emap[x.e].b]));
-    if ([...nodes].some((n) => deg(n) > 2)) {
-      // a branched piece (several pumps joining, a split) has no single start: keep its directions
+    if ([...nodes].some((n) => deg(n) > 2) || ![...nodes].some((n) => deg(n) === 1)) {
+      // a branched piece (several pumps joining, a split) or a loop has no single start: keep its directions
       const piece = whole.map((x) => ({ e: x.e, from: current.get(x.e) }));
       piece.forEach((x) => done.add(x.e));
       steps = steps.concat(piece);
@@ -428,6 +456,9 @@ function toggleStep(eid) {
 }
 
 function reversePath(p) {
+  // flip every pipe first, so orient() sees the directions that match the new flag (branched paths
+  // and loops keep the directions they are given; a simple path is re-run from its start)
+  p.steps = p.steps.map((s) => (G.emap[s.e] ? { e: s.e, from: other(G.emap[s.e], s.from) } : s)).reverse();
   p.reversed = !p.reversed;
   orient(p);
 }
@@ -473,6 +504,7 @@ function lineupRoute(starts, ends, used) {
     for (const e of G.adj[cur]) {
       const nxt = other(e, cur), node = G.nodes[nxt];
       if (done.has(nxt)) continue;
+      if (!checkAllows(cur, prev[cur] && prev[cur].e, e)) continue;   // not backwards through a check valve
       let d = dist[cur] + edgeLength(e);
       if (!ends.has(nxt)) {
         if (node.type === "pump" || node.type === "outlet") continue;
@@ -582,7 +614,7 @@ function pickTerm(t) {
   const [a, b] = ui.terms;
   ui.terms = [];
   const p = activePath(true);
-  const before = JSON.stringify({ valves: ST.valves, paths: ST.paths, pipe: ST.pipe });
+  const before = snapshot();
   const r = traceLineup(a, b, p);
   if (r.error) {
     ui.msg = { kind: "error", lines: [r.error] };
@@ -603,15 +635,24 @@ function pickTerm(t) {
   changed();
 }
 
+// what a trace, a standard line-up or a reset can change, for Undo
+const snapshot = () => JSON.stringify({ valves: ST.valves, paths: ST.paths, pipe: ST.pipe, temp: ST.temp, pumps: ST.pumps });
+
 function undoTrace() {
   if (!ui.undo) return;
-  const u = JSON.parse(ui.undo);
-  ST.valves = u.valves;
-  ST.paths = u.paths;
-  if (u.pipe) ST.pipe = u.pipe;
+  Object.assign(ST, JSON.parse(ui.undo));
   if (!ST.paths.some((p) => p.id === ui.active)) ui.active = ST.paths.length ? ST.paths[0].id : null;
   ui.undo = null;
-  ui.msg = { kind: "ok", lines: ["Undone - valves, paths and pipe mode are back as they were."] };
+  ui.msg = { kind: "ok", lines: ["Undone - everything is back as it was."] };
+  changed();
+}
+
+// back to normal: all valves closed, rams open, no pipe, pumps off, no flow paths, no temporary rig-up
+function resetAll() {
+  const before = snapshot();
+  ST = normalize(null, DEFAULT);
+  Object.assign(ui, { terms: [], draft: null, sel: null, active: null, undo: before,
+    msg: { kind: "ok", lines: ["Reset: all valves closed, rams open, no pipe, pumps off, flow paths and temporary rig-up removed."] } });
   changed();
 }
 
@@ -632,7 +673,7 @@ function drawLineupButtons() {
 // the first valve on every branch leaving them. Rams are never operated.
 function applyLineup(id) {
   const L = NET.lineups[id];
-  const before = JSON.stringify({ valves: ST.valves, paths: ST.paths, pipe: ST.pipe });
+  const before = snapshot();
   const pipeChanged = L.pipe && L.pipe !== pipeMode(ST);
   if (L.pipe) ST.pipe = L.pipe;
   ST.paths = ST.paths.filter((p) => p.std !== L.group);
@@ -653,7 +694,8 @@ function applyLineup(id) {
       }
     }
     const p = newPath();
-    Object.assign(p, { name: d.name, color: d.color, std: L.group, steps, start: d.routes[0][0], reversed: false });
+    Object.assign(p, { name: d.name, color: d.color, std: L.group, steps, start: d.routes[0][0], reversed: false,
+      expect: d.open_to || [] });
     made.push({ p, d });
   }
 
@@ -670,14 +712,22 @@ function applyLineup(id) {
   const gauges = new Set(L.gauges || []);
   gauges.forEach(open);
   gauges.forEach((v) => stop.add(v));
+  // valves the other line-ups of this group open (route and gauge valves) are closed again when this
+  // line-up does not use them, unless a path outside the line-up runs through them
+  const used = usedByPaths(new Set(made.map((m) => m.p)));
   for (const lu of Object.values(NET.lineups)) {
     if (lu.group !== L.group) continue;
-    for (const v of lu.gauges || []) {
-      if (!stop.has(v) && ST.valves[v] === "open") { ST.valves[v] = "closed"; out.closed.push(v); }
+    const theirs = [...(lu.gauges || []), ...lu.paths.flatMap((d) => d.open || d.routes.flat())];
+    for (const v of new Set(theirs)) {
+      if (NET.nodes[v].type !== "valve" || stop.has(v) || used.nodes.has(v) || ST.valves[v] !== "open") continue;
+      ST.valves[v] = "closed";
+      out.closed.push(v);
     }
   }
-  isolate(route, routeEdges, stop, ends, usedByPaths(new Set(made.map((m) => m.p))), out);
+  isolate(route, routeEdges, stop, ends, used, out);
   if (gauges.size) out.gaugeNames = [...gauges];
+  const expected = new Set(L.paths.flatMap((d) => d.open_to || []));
+  out.leaks = out.leaks.filter((n) => !expected.has(n));
 
   ui.undo = before;
   ui.active = made[0].p.id;
@@ -709,7 +759,15 @@ function pathWarnings() {
       dirs.get(e.id).push({ p, from: s.from });
     }
     nodesOf.set(p.id, ns);
-    out.set(p.id, { against: new Set(), shares: new Set(), connected: new Set(), leaks: new Set() });
+    out.set(p.id, { against: new Set(), shares: new Set(), connected: new Set(), leaks: new Set(), checks: new Set() });
+    for (const s of p.steps) {
+      const e = G.emap[s.e];
+      if (!e) continue;
+      const to = other(e, s.from);
+      if ((G.nodes[s.from].kind === "check" && portAt(e, s.from) === 0) || (G.nodes[to].kind === "check" && portAt(e, to) === 1)) {
+        out.get(p.id).checks.add(nodeName(G.nodes[s.from].kind === "check" ? s.from : to));
+      }
+    }
   }
   // paths of the same standard line-up (drilling + boost) are meant to meet, so they don't warn about each other
   const sameLineup = (p, q) => !!p.std && p.std === q.std;
@@ -737,7 +795,7 @@ function pathWarnings() {
         const hit = ST.paths.find((q) => q !== p && nodesOf.get(q.id).has(m));
         if (hit) { w.connected.add(hit.name); continue; }
         if (!passable(mn, ST) || mn.type === "pump") continue;
-        if (isOpenEnd(mn)) { w.leaks.add(nodeName(m)); continue; }
+        if (isOpenEnd(mn)) { if (!(p.expect || []).includes(m)) w.leaks.add(nodeName(m)); continue; }
         todo.push(m);
       }
     }
@@ -749,6 +807,7 @@ function pathWarnings() {
     for (const q of w.connected) if (!w.against.has(q)) list.push(`Connected to path "${q}" through open valves.`);
     for (const q of w.shares) if (!w.against.has(q)) list.push(`Shares pipe with path "${q}".`);
     if (w.leaks.size) list.push(`Also open to: ${[...w.leaks].join(", ")}.`);
+    for (const c of w.checks) list.push(`Flows the wrong way through ${c} - a check valve only lets flow through in its arrow direction.`);
     msgs.set(p.id, list);
   }
   return msgs;
@@ -1183,16 +1242,39 @@ function drawTempItems(warn) {
         try { const b = t.getBBox(); el("rect", { x: b.x - 3, y: b.y - 2, width: b.width + 6, height: b.height + 4, fill: "none", stroke: "#1e6fff", "stroke-dasharray": "3 2" }, grp); } catch (e) { /* not laid out */ }
       }
     } else {
-      const body = el("g", { transform: `translate(${it.x},${it.y}) rotate(${rot})` }, grp);
-      if (ports) el("rect", { x: -ARM - 5, y: -ARM - 5, width: 2 * ARM + 10, height: 2 * ARM + 10, fill: "transparent" }, body);
+      const z = sizeOf(it);
+      const body = el("g", { transform: `translate(${it.x},${it.y}) rotate(${rot}) scale(${z})` }, grp);
+      if (it.kind === "tank") el("rect", { x: -24, y: -19, width: 48, height: 38, fill: "transparent" }, body);
+      else if (ports) el("rect", { x: -ARM - 5, y: -ARM - 5, width: 2 * ARM + 10, height: 2 * ARM + 10, fill: "transparent" }, body);
       else el("rect", { x: -13, y: -11, width: 26, height: 22, fill: "transparent" }, body);
       if (sel) el("circle", { r: ports ? ARM + 5 : 15, fill: "none", stroke: "#1e6fff", "stroke-width": 2, "stroke-dasharray": "3 2" }, body);
-      if (it.kind === "valve") {
+      if (it.kind === "valve" || it.kind === "choke") {
         const open = ST.valves[it.id] === "open", fill = open ? OPEN : CLOSED;
         if (warn.has(it.id)) el("circle", { r: 13, fill: "none", stroke: WARN, "stroke-width": 3 }, body);
         el("polygon", { points: "-10,-7 0,0 -10,7", fill, stroke: HOSE, "stroke-width": 1.5, "stroke-linejoin": "round" }, body);
         el("polygon", { points: "10,-7 0,0 10,7", fill, stroke: HOSE, "stroke-width": 1.5, "stroke-linejoin": "round" }, body);
+        if (it.kind === "valve") el("circle", { r: 3.5, fill: "#fff", stroke: "#222", "stroke-width": 1.3 }, body);   // Lo-Torq
+        else {   // choke: diagonal arrow through the valve
+          el("line", { x1: -12, y1: 10, x2: 9, y2: -8, stroke: "#222", "stroke-width": 1.6 }, body);
+          el("polygon", { points: "13,-11 4,-8.5 10,-2", fill: "#222" }, body);
+        }
         el("title", {}, grp, `${name} ${it.label || ""}: ${open ? "OPEN" : "CLOSED"}`);
+      } else if (it.kind === "filter") {
+        // diamond with a dashed screen across, a port marker at each end in rig-up mode
+        el("polygon", { points: "-12,0 0,-9 12,0 0,9", fill: "#fff", stroke: HOSE, "stroke-width": 1.8, "stroke-linejoin": "round" }, body);
+        el("line", { x1: 0, y1: -9, x2: 0, y2: 9, stroke: HOSE, "stroke-width": 1.4, "stroke-dasharray": "2.5 2" }, body);
+        if (ui.mode === "temp") for (const [px, py] of ports) el("circle", { cx: px, cy: py, r: 2.6, fill: "#fff", stroke: HOSE, "stroke-width": 1.3 }, body);
+        el("title", {}, grp, name + (it.label ? " " + it.label : ""));
+      } else if (it.kind === "tank") {
+        el("rect", { x: -20, y: -15, width: 40, height: 30, rx: 3, fill: "#eceff1", stroke: HOSE, "stroke-width": 2 }, body);
+        el("title", {}, grp, (it.label || name) + " (temporary tank)");
+      } else if (it.kind === "check") {
+        // inlet half outlined, outlet half filled, arrow in the flow direction
+        el("polygon", { points: "-10,-7 0,0 -10,7", fill: "#fff", stroke: HOSE, "stroke-width": 1.5, "stroke-linejoin": "round" }, body);
+        el("polygon", { points: "10,-7 0,0 10,7", fill: HOSE, stroke: HOSE, "stroke-width": 1.5, "stroke-linejoin": "round" }, body);
+        el("path", { d: "M-7 -12 H5 M2 -15 L7 -12 L2 -9", fill: "none", stroke: "#222", "stroke-width": 1.4 }, body);
+        if (ui.mode === "temp") for (const [px, py] of ports) el("circle", { cx: px, cy: py, r: 2.6, fill: "#fff", stroke: HOSE, "stroke-width": 1.3 }, body);
+        el("title", {}, grp, `${name} ${it.label || ""}: flow in the arrow direction only` + (ui.mode === "temp" ? " - Rotate turns it" : ""));
       } else if (ports) {
         // drawn as the fitting itself: one arm per port, a port marker at each arm end in rig-up mode
         el("path", { d: ports.map(([px, py]) => `M0 0 L${px} ${py}`).join(" "), stroke: HOSE, "stroke-width": 5 }, body);
@@ -1205,8 +1287,11 @@ function drawTempItems(warn) {
         el("rect", { x: -3, y: -9, width: 6, height: 18, fill: HOSE, stroke: "#222", "stroke-width": 1 }, body);
         el("title", {}, grp, name + (it.label ? " " + it.label : ""));
       }
-      if (it.label) {
-        const off = ports ? ARM + 8 : 15;
+      if (it.kind === "tank") {
+        el("text", { x: it.x, y: it.y + 3.5 * sizeOf(it), "text-anchor": "middle", "font-size": 9 * sizeOf(it), "font-weight": "bold",
+          fill: "#222", "pointer-events": "none" }, grp, it.label || "TANK");
+      } else if (it.label) {
+        const off = (it.kind === "tee" || it.kind === "cross" ? ARM + 8 : 15) * z;
         if (!ports && it.o === "v") haloText(grp, it.x + off, it.y + 4, it.label, {});
         else haloText(grp, it.x, it.y - off, it.label, { "text-anchor": "middle" });
       }
@@ -1235,19 +1320,22 @@ function addItem(kind, x, y, attachTo, port) {
     const [ax, ay] = endPos(attachTo, port);
     // fitted on the arm of a T / 4-way: continue outwards along that arm (u); on a connection point: to the right
     const pit = tempItem(ST, attachTo), onArm = !!(pit && PORTS[pit.kind] && port != null);
-    const u = onArm ? [(ax - pit.x) / ARM, (ay - pit.y) / ARM] : [1, 0];
+    const L = onArm ? Math.hypot(ax - pit.x, ay - pit.y) || 1 : 1;
+    const u = onArm ? [(ax - pit.x) / L, (ay - pit.y) / L] : [1, 0];
     if (PORTS[kind]) {
-      // a T / 4-way is turned so its first arm (port 0) faces back onto the attach point
-      Object.assign(it, { x: Math.round(ax + u[0] * ARM), y: Math.round(ay + u[1] * ARM),
+      // a T / 4-way / check valve is turned so port 0 (first arm, inlet) faces back onto the attach point
+      const reach = Math.hypot(...PORTS[kind][0]) + (onArm ? 0 : 8);   // clear of a connection point's ring
+      Object.assign(it, { x: Math.round(ax + u[0] * reach), y: Math.round(ay + u[1] * reach),
         r: (Math.round(Math.atan2(u[1], u[0]) * 180 / Math.PI) + 360) % 360 });
     } else {
-      const off = onArm ? (kind === "cap" ? 3 : 11) : 0;
+      // a tank sits clear of what it is fitted to, with a short line to it
+      const off = kind === "tank" ? 34 : onArm ? (kind === "cap" ? 3 : 11) : 0;
       Object.assign(it, { x: Math.round(ax + u[0] * off), y: Math.round(ay + u[1] * off) });
       if (Math.abs(u[1]) > Math.abs(u[0])) it.o = "v";
     }
   }
   ST.temp.items.push(it);
-  if (it.kind === "valve") ST.valves[it.id] = "closed";
+  if (it.kind === "valve" || it.kind === "choke") ST.valves[it.id] = "closed";
   if (attachTo && kind !== "text") {
     const l = { id: nextId("L", ST.temp.lines), a: attachTo, b: it.id, pts: [], label: "", rating: "15k" };
     if (port != null) l.pa = port;
@@ -1289,7 +1377,7 @@ function onTempItemClick(id, ev) {
   const it = tempItem(ST, id);
   if (it.kind === "text") return;
   if (ui.mode === "auto") return pickTerm({ kind: "node", id });
-  if (it.kind === "valve") toggleValve(id);
+  if (it.kind === "valve" || it.kind === "choke") toggleValve(id);
 }
 
 // click on empty drawing area
@@ -1325,8 +1413,8 @@ function deleteTemp(id) {
 function tempPanel() {
   let h = `<div class="sec"><h4>Temporary rig-up</h4>`;
   if (ui.mode === "temp") {
-    const tools = [["select", "Select / move"], ["line", "Line / hose"], ["valve", "Valve"],
-      ["tee", "T-piece"], ["cross", "4-way"], ["cap", "Blind cap"], ["text", "Text"]];
+    const tools = [["select", "Select / move"], ["line", "Line / hose"], ["valve", "Lo-Torq"], ["check", "Check valve"],
+      ["choke", "Choke valve"], ["filter", "Filter"], ["tank", "Tank"], ["tee", "T-piece"], ["cross", "4-way"], ["cap", "Blind cap"], ["text", "Text"]];
     h += `<div class="tools">${tools.map(([k, n]) => `<button class="small ${ui.tool === k ? "on" : ""}" data-tool="${k}">${n}</button>`).join("")}</div>`;
     h += `<div class="muted" style="margin:4px 0">${TOOL_HELP[ui.tool]}</div>`;
     if (ui.draft) {
@@ -1343,11 +1431,15 @@ function tempPanel() {
         h += `<label>Rating <select data-trating>${["lp", "7.5k", "10k", "15k"].map((r) =>
           `<option value="${r}" ${r === (s.rating || "15k") ? "selected" : ""}>${r === "lp" ? "Low pressure" : r.toUpperCase() + " psi"}</option>`).join("")}</select></label>`;
       }
+      if (!isLine && SIZED_KINDS.includes(s.kind)) {
+        h += `<label>Size <select data-tsize>${SIZES.map(([v, n]) =>
+          `<option value="${v}" ${v === sizeOf(s) ? "selected" : ""}>${n}</option>`).join("")}</select></label>`;
+      }
       h += `<div class="row">`;
-      if (!isLine && s.kind === "valve") {
+      if (!isLine && (s.kind === "valve" || s.kind === "choke")) {
         h += `<button class="small" data-act="t-toggle">${ST.valves[s.id] === "open" ? "Close" : "Open"}</button>`;
       }
-      if (!isLine && s.kind !== "text" && s.kind !== "cross") h +=`<button class="small" data-act="t-rotate">Rotate</button>`;
+      if (!isLine && !["text", "cross", "tank"].includes(s.kind)) h +=`<button class="small" data-act="t-rotate">Rotate</button>`;
       if (isLine && (s.pts || []).length) h += `<button class="small" data-act="t-straight">Remove bends</button>`;
       h += `<button class="small" data-act="t-delete">Delete</button></div></div>`;
     }
@@ -1359,7 +1451,7 @@ function tempPanel() {
     const row = (id, txt, sub) => `<div class="hose ${ui.sel === id && ui.mode === "temp" ? "selrow" : ""}" ${ui.mode === "temp" ? `data-tsel="${id}"` : ""}>
       <span class="name">${txt}${sub ? `<br><span class="muted">${sub}</span>` : ""}</span></div>`;
     h += items.map((it) => row(it.id, `<b>${esc(TEMP_KINDS[it.kind].name)}</b> ${esc(it.label || "")}`,
-      it.kind === "valve" ? (ST.valves[it.id] === "open" ? "open" : "closed") : "")).join("");
+      it.kind === "valve" || it.kind === "choke" ? (ST.valves[it.id] === "open" ? "open" : "closed") : "")).join("");
     h += lines.map((l) => row(l.id, `<b>Line</b> ${esc(l.label || "")}`,
       `${esc(nodeName(l.a))} → ${esc(nodeName(l.b))}, ${l.rating || "15k"}${lineActive(l, NET, ST) ? "" : " (disconnected)"}`)).join("");
   }
@@ -1380,7 +1472,11 @@ const HELP = {
 const TOOL_HELP = {
   select: "Click a temporary part or line to edit it. Drag parts to move them.",
   line: "Click where the line starts (connection point, temporary part or the arm end of a T / 4-way), click empty spots for bends, then click where it ends. Backspace removes the last bend, Esc cancels.",
-  valve: "Click to place a valve.", tee: "Click to place a T-piece. Lines connect at the end of each arm; Rotate turns the stem.",
+  valve: "Click to place a Lo-Torq valve.",
+  check: "Click to place a check valve. Flow only passes in its arrow direction; Rotate turns it. Lines connect to its inlet or outlet end.",
+  choke: "Click to place a choke valve.",
+  filter: "Click to place a filter. Lines connect to either end; Rotate turns it.",
+  tank: "Click to place a temporary tank. Flow can end in it, like the trip tank.", tee: "Click to place a T-piece. Lines connect at the end of each arm; Rotate turns the stem.",
   cross: "Click to place a 4-way piece. Lines connect at the end of each arm.",
   cap: "Click a connection point or the arm of a T-piece / 4-way to cap it.", text: "Click to place a label.",
 };
@@ -1499,6 +1595,7 @@ panel.addEventListener("change", (ev) => {
   if (d.arrows) { findPath(d.arrows).arrows = ev.target.checked; return changed(); }
   if (d.tlabel !== undefined) { tempThing(ui.sel).label = ev.target.value; return changed(); }
   if (d.trating !== undefined) { tempThing(ui.sel).rating = ev.target.value; return changed(); }
+  if (d.tsize !== undefined) { tempThing(ui.sel).size = Number(ev.target.value); return changed(); }
 });
 
 panel.addEventListener("focusin", (ev) => {
@@ -1541,6 +1638,7 @@ document.getElementById("toolbar").addEventListener("click", (ev) => {
       for (const id in ST.valves) if (NET.nodes[id]?.type !== "ram") ST.valves[id] = "closed";
       forgetUndo();
       return changed();
+    case "reset": return resetAll();
     case "open-rams":
       for (const id in ST.valves) if (NET.nodes[id]?.type === "ram") ST.valves[id] = "open";
       forgetUndo();
